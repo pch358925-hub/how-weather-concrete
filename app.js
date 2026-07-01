@@ -45,6 +45,7 @@ let isFilePickerOpen = false;
 let filePickerClearTimer = null;
 let pendingRealtimeRefresh = false;
 let activePhotoMutationCount = 0;
+let boardLoadToken = 0;
 
 let state = {
   shareCode: "",
@@ -265,14 +266,26 @@ function resetCurrentBoard(options = {}) {
 }
 
 function loadLocalBoard() {
+  const shareCode = state.shareCode;
   const saved = localStorage.getItem(LOCAL_PREFIX + state.shareCode);
+  state = {
+    shareCode,
+    boardId: null,
+    projectName: DEFAULT_PROJECT_NAME,
+    pourPart: "",
+    pourDate: toDateInputValue(new Date()),
+    createdAt: "",
+    entries: {},
+  };
+
   if (saved) {
     try {
       const parsed = JSON.parse(saved);
       state = {
         ...state,
         ...parsed,
-        shareCode: state.shareCode,
+        shareCode,
+        boardId: null,
         entries: parsed.entries || {},
       };
       state.projectName = normalizeProjectName(state.projectName);
@@ -291,15 +304,17 @@ function loadLocalBoard() {
 }
 
 async function loadCloudBoard(options = {}) {
+  const requestedShareCode = state.shareCode;
   const shouldSyncInputs = options.syncInputs !== false;
   const createIfMissing = options.createIfMissing === true;
   const { data: board, error } = await dbClient
     .from("photo_boards")
     .select("*, photo_entries(*)")
-    .eq("share_code", state.shareCode)
+    .eq("share_code", requestedShareCode)
     .maybeSingle();
 
   if (error) throw error;
+  if (state.shareCode !== requestedShareCode) return null;
 
   if (board) {
     state.boardId = board.id;
@@ -311,7 +326,7 @@ async function loadCloudBoard(options = {}) {
     const { data: created, error: insertError } = await dbClient
       .from("photo_boards")
       .insert({
-        share_code: state.shareCode,
+        share_code: requestedShareCode,
         project_name: DEFAULT_PROJECT_NAME,
         pour_part: "",
         pour_date: toDateInputValue(new Date()),
@@ -320,6 +335,7 @@ async function loadCloudBoard(options = {}) {
       .single();
 
     if (insertError) throw insertError;
+    if (state.shareCode !== requestedShareCode) return null;
 
     state.boardId = created.id;
     state.projectName = normalizeProjectName(created.project_name || DEFAULT_PROJECT_NAME);
@@ -347,16 +363,18 @@ async function loadCloudBoard(options = {}) {
 }
 
 async function loadCloudEntries() {
+  const requestedBoardId = state.boardId;
   state.entries = {};
-  if (!state.boardId) return;
+  if (!requestedBoardId) return;
 
   const { data, error } = await dbClient
     .from("photo_entries")
     .select("*")
-    .eq("board_id", state.boardId)
+    .eq("board_id", requestedBoardId)
     .order("day_no", { ascending: true });
 
   if (error) throw error;
+  if (state.boardId !== requestedBoardId) return;
 
   applyCloudEntries(data || []);
 }
@@ -1257,7 +1275,14 @@ function handlePrint() {
 }
 
 async function createNewBoard() {
+  if (activePhotoMutationCount > 0) {
+    showToast("사진 등록이 끝난 뒤 새 사진대지를 만들어 주세요.");
+    return;
+  }
+
   window.clearTimeout(metaSaveTimer);
+  metaSaveTimer = null;
+  boardLoadToken += 1;
 
   const url = new URL(window.location.href);
   const shareCode = createShareCode();
@@ -1288,19 +1313,46 @@ async function createNewBoard() {
 
 async function openBoard(shareCode) {
   if (!shareCode) return;
+  if (activePhotoMutationCount > 0) {
+    showToast("사진 등록이 끝난 뒤 다른 타설부위를 열어 주세요.");
+    return;
+  }
+
+  window.clearTimeout(metaSaveTimer);
+  metaSaveTimer = null;
+  if (state.shareCode && shareCode !== state.shareCode) {
+    await saveMeta();
+  }
+
+  const token = ++boardLoadToken;
+  const selectedBoard = boardList.find((board) => board.shareCode === shareCode);
   const url = new URL(window.location.href);
   url.searchParams.set("board", shareCode);
   window.history.replaceState({}, "", url.toString());
-  state.shareCode = shareCode;
+  state = {
+    shareCode,
+    boardId: null,
+    projectName: selectedBoard?.projectName || DEFAULT_PROJECT_NAME,
+    pourPart: selectedBoard?.pourPart || "",
+    pourDate: selectedBoard?.pourDate || toDateInputValue(new Date()),
+    createdAt: selectedBoard?.createdAt || "",
+    entries: {},
+  };
+  syncInputsFromState();
+  closePhotoViewer();
+  renderAll();
 
   if (dbClient) {
-    await loadCloudBoard();
+    const loaded = await loadCloudBoard();
+    if (loaded === null || token !== boardLoadToken || state.shareCode !== shareCode) return;
     await subscribeToChanges();
   } else {
     loadLocalBoard();
   }
 
+  if (token !== boardLoadToken || state.shareCode !== shareCode) return;
   await loadBoardList();
+  if (token !== boardLoadToken || state.shareCode !== shareCode) return;
   renderAll();
 }
 
