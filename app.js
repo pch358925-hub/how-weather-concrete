@@ -38,9 +38,6 @@ let boardList = [];
 let boardSearchQuery = "";
 let boardListRenderFrame = 0;
 let isBoardSearchComposing = false;
-let touchStartX = 0;
-let touchStartY = 0;
-let swipeDay = null;
 
 let state = {
   shareCode: "",
@@ -147,76 +144,19 @@ function bindEvents() {
     if (!target.matches("input[type='file']")) return;
 
     const day = Number(target.dataset.day);
-    const file = target.files && target.files[0];
+    const files = Array.from(target.files || []);
     target.value = "";
-    if (!day || !file) return;
+    if (!day || !files.length) return;
 
-    await handlePhotoUpload(day, file);
+    await handlePhotoSelection(day, files);
   });
 
   elements.dayGrid.addEventListener("click", async (event) => {
-    const pickButton = event.target.closest("[data-pick-input]");
-    if (pickButton) {
-      event.preventDefault();
-      const input = document.getElementById(pickButton.dataset.pickInput);
-      if (input) {
-        input.click();
-      }
-      return;
-    }
-
     const deleteButton = event.target.closest("[data-delete-day]");
     if (!deleteButton) return;
 
     const day = Number(deleteButton.dataset.deleteDay);
     await deletePhoto(day);
-  });
-
-  elements.dayGrid.addEventListener("touchstart", (event) => {
-    const card = event.target.closest("[data-day-card]");
-    if (!card || event.touches.length !== 1) return;
-
-    const touch = event.touches[0];
-    touchStartX = touch.clientX;
-    touchStartY = touch.clientY;
-    swipeDay = Number(card.dataset.dayCard);
-    card.classList.remove("swiping");
-  }, { passive: true });
-
-  elements.dayGrid.addEventListener("touchmove", (event) => {
-    if (!swipeDay || event.touches.length !== 1) return;
-
-    const card = elements.dayGrid.querySelector(`[data-day-card="${swipeDay}"]`);
-    if (!card) return;
-
-    const touch = event.touches[0];
-    const diffX = touch.clientX - touchStartX;
-    const diffY = Math.abs(touch.clientY - touchStartY);
-    if (diffX >= 0 || Math.abs(diffX) < 16 || diffY > 42) return;
-
-    card.classList.add("swiping");
-    card.style.transform = `translateX(${Math.max(diffX, -76)}px)`;
-  }, { passive: true });
-
-  elements.dayGrid.addEventListener("touchend", async () => {
-    if (!swipeDay) return;
-
-    const card = elements.dayGrid.querySelector(`[data-day-card="${swipeDay}"]`);
-    const diffX = card ? Number(card.style.transform.match(/-?\d+/)?.[0] || 0) : 0;
-    const day = swipeDay;
-
-    if (card) {
-      card.classList.remove("swiping");
-      card.style.transform = "";
-    }
-
-    touchStartX = 0;
-    touchStartY = 0;
-    swipeDay = null;
-
-    if (diffX <= -64) {
-      await deletePhoto(day);
-    }
   });
 }
 
@@ -638,9 +578,18 @@ function clearMetaDraft() {
 async function saveEntry(day) {
   if (!state.shareCode || (dbClient && !state.boardId)) {
     showToast("새 대지를 먼저 만들어 주세요.");
-    return;
+    return false;
   }
 
+  const saved = await persistEntry(day);
+  if (!saved) return false;
+
+  await loadBoardList();
+  renderAll();
+  return true;
+}
+
+async function persistEntry(day) {
   const entry = getEntry(day);
 
   if (dbClient && state.boardId) {
@@ -662,20 +611,17 @@ async function saveEntry(day) {
     if (error) {
       console.error(error);
       showToast(`${day}일차 저장에 실패했습니다.`);
-      return;
+      return false;
     }
-
-    await loadBoardList();
   } else {
-    saveLocalBoard();
-    await loadBoardList();
+    return saveLocalBoard();
   }
 
-  renderAll();
+  return true;
 }
 
 function saveLocalBoard() {
-  if (!state.shareCode) return;
+  if (!state.shareCode) return false;
 
   try {
     localStorage.setItem(
@@ -690,58 +636,131 @@ function saveLocalBoard() {
       })
     );
     renderStorageMeter();
+    return true;
   } catch (error) {
     console.error(error);
     showToast("브라우저 저장공간이 부족합니다. 실시간 저장소 연결이 필요합니다.");
+    return false;
   }
 }
 
 async function handlePhotoUpload(day, file) {
   if (!state.shareCode || (dbClient && !state.boardId)) {
     showToast("새 대지를 먼저 만들어 주세요.");
-    return;
+    return false;
   }
 
   if (!isImageFile(file)) {
     showToast("이미지 파일만 등록할 수 있습니다.");
-    return;
+    return false;
   }
 
   try {
     showToast(`${day}일차 사진을 압축하는 중입니다.`);
-    const image = await resizeImage(file);
-    const entry = getEntry(day);
-    const oldPath = entry.photoPath;
-    entry.photoUrl = image.dataUrl;
-    entry.photoPath = "";
-    entry.uploadedAt = new Date().toISOString();
-    entry.sizeBytes = image.blob.size;
-
-    if (dbClient && state.boardId) {
-      const path = `${state.shareCode}/day-${day}-${Date.now()}.jpg`;
-      const { error: uploadError } = await dbClient.storage
-        .from(config.bucket)
-        .upload(path, image.blob, {
-          contentType: "image/jpeg",
-          upsert: true,
-        });
-
-      if (uploadError) throw uploadError;
-
-      const { data } = dbClient.storage.from(config.bucket).getPublicUrl(path);
-      entry.photoUrl = data.publicUrl;
-      entry.photoPath = path;
-
-      if (oldPath && oldPath !== path) {
-        dbClient.storage.from(config.bucket).remove([oldPath]).catch(console.error);
-      }
-    }
-
-    await saveEntry(day);
+    const image = await preparePhotoEntry(day, file);
+    const saved = await saveEntry(day);
+    if (!saved) return false;
+    cleanupOldPhotoPath(image.oldPath, image.newPath);
     showToast(`${day}일차 사진을 등록했습니다. ${formatBytes(file.size)} → ${formatBytes(image.blob.size)}`);
+    return true;
   } catch (error) {
     console.error(error);
-    showToast("사진 등록에 실패했습니다.");
+    showToast("사진 등록에 실패했습니다. 다른 사진이나 JPG 사진으로 다시 시도해 주세요.");
+    return false;
+  }
+}
+
+async function handlePhotoSelection(startDay, files) {
+  if (files.length <= 1) {
+    await handlePhotoUpload(startDay, files[0]);
+    return;
+  }
+
+  if (!state.shareCode || (dbClient && !state.boardId)) {
+    showToast("새 대지를 먼저 만들어 주세요.");
+    return;
+  }
+
+  const imageFiles = files.filter(isImageFile);
+  if (!imageFiles.length) {
+    showToast("이미지 파일만 등록할 수 있습니다.");
+    return;
+  }
+
+  const targetDays = days().filter((day) => day >= startDay).slice(0, imageFiles.length);
+  if (!targetDays.length) return;
+
+  const overwriteCount = targetDays.filter((day) => getEntry(day).photoUrl).length;
+  if (overwriteCount) {
+    const ok = window.confirm(`기존 사진 ${overwriteCount}장을 새 사진으로 바꿀까요?`);
+    if (!ok) return;
+  }
+
+  let completed = 0;
+  try {
+    showToast(`${targetDays[0]}일차부터 사진 ${targetDays.length}장을 등록하는 중입니다.`);
+    for (const day of targetDays) {
+      const image = await preparePhotoEntry(day, imageFiles[completed]);
+      const saved = await persistEntry(day);
+      if (!saved) throw new Error(`${day}일차 저장 실패`);
+      cleanupOldPhotoPath(image.oldPath, image.newPath);
+      completed += 1;
+    }
+
+    await loadBoardList();
+    renderAll();
+
+    const overflowCount = imageFiles.length - targetDays.length;
+    const invalidCount = files.length - imageFiles.length;
+    const overflowText = overflowCount > 0 ? ` ${overflowCount}장은 5일차를 넘어 제외했습니다.` : "";
+    const invalidText = invalidCount > 0 ? ` 이미지가 아닌 파일 ${invalidCount}개는 제외했습니다.` : "";
+    showToast(`${targetDays[0]}일차부터 ${completed}장 등록했습니다.${overflowText}${invalidText}`);
+  } catch (error) {
+    console.error(error);
+    await loadBoardList();
+    renderAll();
+    showToast(`${completed}장 등록 후 중단됐습니다. 실패한 사진은 다시 시도해 주세요.`);
+  }
+}
+
+async function preparePhotoEntry(day, file) {
+  const uploadFile = await prepareImageFile(file);
+  const image = await resizeImage(uploadFile);
+  const entry = getEntry(day);
+  const oldPath = entry.photoPath;
+  let newPath = "";
+  entry.photoUrl = image.dataUrl;
+  entry.photoPath = "";
+  entry.uploadedAt = new Date().toISOString();
+  entry.sizeBytes = image.blob.size;
+
+  if (dbClient && state.boardId) {
+    const path = `${state.shareCode}/day-${day}-${Date.now()}.jpg`;
+    const { error: uploadError } = await dbClient.storage
+      .from(config.bucket)
+      .upload(path, image.blob, {
+        contentType: "image/jpeg",
+        upsert: true,
+      });
+
+    if (uploadError) throw uploadError;
+
+    const { data } = dbClient.storage.from(config.bucket).getPublicUrl(path);
+    entry.photoUrl = data.publicUrl;
+    entry.photoPath = path;
+    newPath = path;
+  }
+
+  return {
+    ...image,
+    oldPath,
+    newPath,
+  };
+}
+
+function cleanupOldPhotoPath(oldPath, newPath) {
+  if (dbClient && oldPath && oldPath !== newPath) {
+    dbClient.storage.from(config.bucket).remove([oldPath]).catch(console.error);
   }
 }
 
@@ -929,16 +948,16 @@ function renderDayGrid() {
           </div>
           <div class="day-card-body">
             <div class="upload-row">
-              <button class="small-button" type="button" data-pick-input="camera-${day}">
+              <label class="small-button file-button">
                 <span class="button-icon" aria-hidden="true">▣</span>
                 <span>촬영</span>
-              </button>
-              <input id="camera-${day}" class="file-input" data-day="${day}" type="file" accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif" capture="environment">
-              <button class="small-button" type="button" data-pick-input="gallery-${day}">
+                <input class="file-input" data-day="${day}" type="file" accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif" capture="environment">
+              </label>
+              <label class="small-button file-button">
                 <span class="button-icon" aria-hidden="true">＋</span>
                 <span>첨부</span>
-              </button>
-              <input id="gallery-${day}" class="file-input" data-day="${day}" type="file" accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif">
+                <input class="file-input" data-day="${day}" type="file" accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif" multiple>
+              </label>
               ${
                 hasPhoto
                   ? `<button class="small-button danger-button" type="button" data-delete-day="${day}">
@@ -1223,6 +1242,28 @@ function getKnownPhotoBytes() {
   return Math.max(listPhotoCount, currentPhotoCount) * ESTIMATED_PHOTO_BYTES;
 }
 
+async function prepareImageFile(file) {
+  if (!isHeicFile(file)) return file;
+
+  showToast("휴대폰 사진 형식을 변환하는 중입니다.");
+  await ensureHeicConverter();
+  const converted = await window.heic2any({
+    blob: file,
+    toType: "image/jpeg",
+    quality: IMAGE_QUALITY,
+  });
+
+  return Array.isArray(converted) ? converted[0] : converted;
+}
+
+async function ensureHeicConverter() {
+  if (window.heic2any) return;
+  await loadScript("https://cdn.jsdelivr.net/npm/heic2any/dist/heic2any.min.js");
+  if (!window.heic2any) {
+    throw new Error("HEIC converter unavailable");
+  }
+}
+
 function resizeImage(file, maxWidth = IMAGE_MAX_WIDTH, maxHeight = IMAGE_MAX_HEIGHT) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -1268,6 +1309,10 @@ function resizeImage(file, maxWidth = IMAGE_MAX_WIDTH, maxHeight = IMAGE_MAX_HEI
 function isImageFile(file) {
   if (file.type && file.type.startsWith("image/")) return true;
   return /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || "");
+}
+
+function isHeicFile(file) {
+  return /hei(c|f)/i.test(file.type || "") || /\.(heic|heif)$/i.test(file.name || "");
 }
 
 function days() {

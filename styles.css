@@ -562,8 +562,6 @@ input:focus {
   border-radius: 8px;
   overflow: hidden;
   background: #fff;
-  transition: transform 160ms ease;
-  touch-action: pan-y;
 }
 
 .day-card.complete {
@@ -658,27 +656,31 @@ input:focus {
   padding: 0 6px;
 }
 
+.file-button {
+  position: relative;
+  cursor: pointer;
+  overflow: hidden;
+  -webkit-tap-highlight-color: transparent;
+}
+
 .upload-row .danger-button {
   grid-column: 1 / -1;
 }
 
 .file-input {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   overflow: hidden;
-  opacity: 0.01;
-  pointer-events: none;
+  opacity: 0;
+  cursor: pointer;
 }
 
 .uploaded-meta {
   padding-top: 4px;
   color: var(--muted);
   font-size: 11px;
-}
-
-.day-card.swiping {
-  border-color: rgba(180, 58, 51, 0.42);
 }
 
 .print-area {
