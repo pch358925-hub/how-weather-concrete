@@ -3,13 +3,10 @@ const DAY_COUNT = 5;
 const LOCAL_PREFIX = "curing-photo-board:";
 const META_DRAFT_PREFIX = `${LOCAL_PREFIX}meta-draft:`;
 const STORAGE_DISPLAY_LIMIT_BYTES = 1024 * 1024 * 1024;
-const ESTIMATED_PHOTO_BYTES = 600 * 1024;
-const IMAGE_MAX_WIDTH = 1440;
-const IMAGE_MAX_HEIGHT = 960;
-const IMAGE_QUALITY = 0.72;
-const IMAGE_MIN_QUALITY = 0.58;
-const IMAGE_TARGET_BYTES = 520 * 1024;
-const IMAGE_MIN_WIDTH = 1180;
+const ESTIMATED_PHOTO_BYTES = 450 * 1024;
+const IMAGE_MAX_WIDTH = 1280;
+const IMAGE_MAX_HEIGHT = 853;
+const IMAGE_QUALITY = 0.7;
 
 const elements = {
   searchButton: document.getElementById("searchButton"),
@@ -18,9 +15,6 @@ const elements = {
   boardSearchBar: document.getElementById("boardSearchBar"),
   boardSearchInput: document.getElementById("boardSearchInput"),
   clearSearchButton: document.getElementById("clearSearchButton"),
-  prevListMonthButton: document.getElementById("prevListMonthButton"),
-  listMonthInput: document.getElementById("listMonthInput"),
-  nextListMonthButton: document.getElementById("nextListMonthButton"),
   storageMeterText: document.getElementById("storageMeterText"),
   storageMeterBar: document.getElementById("storageMeterBar"),
   boardList: document.getElementById("boardList"),
@@ -52,8 +46,6 @@ let filePickerClearTimer = null;
 let pendingRealtimeRefresh = false;
 let activePhotoMutationCount = 0;
 let boardLoadToken = 0;
-let listMonth = "";
-let knownPhotoCount = 0;
 
 let state = {
   shareCode: "",
@@ -80,7 +72,6 @@ async function init() {
     } else {
       resetCurrentBoard();
     }
-    ensureListMonthForCurrentBoard();
     await loadBoardList();
     setSyncStatus("현재 브라우저에만 저장됩니다. 실시간 공유는 config.js 설정 후 사용할 수 있습니다.");
   }
@@ -109,12 +100,6 @@ function bindEvents() {
     }
   });
   elements.clearSearchButton.addEventListener("click", clearBoardSearch);
-  elements.prevListMonthButton.addEventListener("click", () => shiftListMonth(-1));
-  elements.nextListMonthButton.addEventListener("click", () => shiftListMonth(1));
-  elements.listMonthInput.addEventListener("change", () => {
-    listMonth = elements.listMonthInput.value || toMonthInputValue(new Date());
-    refreshBoardList();
-  });
   elements.printButton.addEventListener("click", handlePrint);
   elements.newBoardButton.addEventListener("click", createNewBoard);
   elements.prevPourDateButton.addEventListener("click", () => shiftPourDate(-1));
@@ -235,7 +220,6 @@ async function setupCloudMode() {
     } else {
       resetCurrentBoard();
     }
-    ensureListMonthForCurrentBoard();
     await loadBoardList();
     setSyncStatus("실시간 공유 저장소에 연결되었습니다.");
   } catch (error) {
@@ -243,7 +227,6 @@ async function setupCloudMode() {
     showToast("실시간 연결에 실패해서 이 브라우저에만 저장합니다.");
     dbClient = null;
     loadLocalBoard();
-    ensureListMonthForCurrentBoard();
     await loadBoardList();
     setSyncStatus("실시간 연결에 실패했습니다. Supabase 설정을 확인해 주세요.");
   }
@@ -411,10 +394,8 @@ function applyCloudEntries(entries) {
 async function loadBoardList() {
   if (dbClient) {
     await loadCloudBoardList();
-    await loadCloudPhotoCount();
   } else {
     loadLocalBoardList();
-    knownPhotoCount = countLocalStoredPhotos();
   }
   await reconcileCurrentBoardEntries();
 }
@@ -504,84 +485,11 @@ async function reconcileCurrentBoardEntries() {
 }
 
 function getListRange() {
-  const month = listMonth || toMonthInputValue(new Date());
-  const start = `${month}-01`;
-  const end = toDateInputValue(getMonthEndDate(month));
-  return { start, end };
-}
-
-async function loadCloudPhotoCount() {
-  try {
-    const { count, error } = await dbClient
-      .from("photo_entries")
-      .select("id", { count: "exact", head: true })
-      .not("photo_url", "is", null);
-
-    if (error) throw error;
-    knownPhotoCount = Number(count || 0);
-  } catch (error) {
-    console.warn("Photo count failed", error);
-    knownPhotoCount = Math.max(knownPhotoCount, countVisibleBoardPhotos());
-  }
-}
-
-function countLocalStoredPhotos() {
-  return Object.keys(localStorage)
-    .filter((key) => key.startsWith(LOCAL_PREFIX) && !key.startsWith(META_DRAFT_PREFIX))
-    .reduce((sum, key) => {
-      try {
-        const parsed = JSON.parse(localStorage.getItem(key) || "{}");
-        const entries = parsed.entries || {};
-        return sum + Object.values(entries).filter((entry) => entry && entry.photoUrl).length;
-      } catch {
-        return sum;
-      }
-    }, 0);
+  return { start: "", end: "" };
 }
 
 function countVisibleBoardPhotos() {
   return boardList.reduce((sum, board) => sum + Number(board.completedCount || 0), 0);
-}
-
-function ensureListMonthForCurrentBoard() {
-  if (!listMonth) {
-    listMonth = getMonthFromDateValue(state.pourDate) || toMonthInputValue(new Date());
-  }
-  syncListMonthInput();
-}
-
-function setListMonthFromCurrentBoard() {
-  const month = getMonthFromDateValue(state.pourDate);
-  if (month) {
-    listMonth = month;
-  } else if (!listMonth) {
-    listMonth = toMonthInputValue(new Date());
-  }
-  syncListMonthInput();
-}
-
-function syncListMonthInput() {
-  if (elements.listMonthInput) {
-    elements.listMonthInput.value = listMonth || toMonthInputValue(new Date());
-  }
-}
-
-async function shiftListMonth(offset) {
-  const baseMonth = listMonth || toMonthInputValue(new Date());
-  listMonth = addMonths(baseMonth, offset);
-  syncListMonthInput();
-  await refreshBoardList();
-}
-
-async function refreshBoardList() {
-  try {
-    await loadBoardList();
-    renderBoardList();
-    renderStorageMeter();
-  } catch (error) {
-    console.error(error);
-    showToast("목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.");
-  }
 }
 
 async function shiftPourDate(offset) {
@@ -617,7 +525,6 @@ async function subscribeToChanges() {
         if (payload.new?.share_code === state.shareCode || payload.old?.share_code === state.shareCode) {
           const inputFocused = isMetaInputFocused();
           await loadCloudBoard({ syncInputs: !inputFocused });
-          setListMonthFromCurrentBoard();
           if (inputFocused) {
             renderMetaPreview();
           } else {
@@ -709,14 +616,12 @@ async function saveMeta() {
     }
 
     clearMetaDraft();
-    setListMonthFromCurrentBoard();
     await loadBoardList();
     renderBoardList();
     renderStorageMeter();
   } else {
     saveLocalBoard();
     clearMetaDraft();
-    setListMonthFromCurrentBoard();
     await loadBoardList();
     renderBoardList();
     renderStorageMeter();
@@ -1097,7 +1002,6 @@ async function flushPendingRealtimeRefresh() {
     const inputFocused = isMetaInputFocused();
     await loadCloudBoard({ syncInputs: !inputFocused });
     await loadCloudEntries();
-    setListMonthFromCurrentBoard();
     await loadBoardList();
     if (inputFocused) {
       renderMetaPreview();
@@ -1117,10 +1021,9 @@ function renderBoardList() {
   const visibleBoards = getVisibleBoardList();
   if (!visibleBoards.length) {
     const isSearching = Boolean(normalizeSearchText(boardSearchQuery));
-    const monthLabel = formatListMonthLabel(listMonth);
     elements.boardList.innerHTML = `
       <div class="empty-list">
-        ${isSearching ? "검색 결과가 없습니다." : `${monthLabel} 사진대지가 없습니다.`}
+        ${isSearching ? "검색 결과가 없습니다." : "등록된 사진대지가 없습니다."}
       </div>
     `;
     return;
@@ -1279,14 +1182,13 @@ function renderDayGrid() {
 
 function renderPrintArea() {
   const groupedDays = [[1, 2], [3, 4], [5, null]];
-  const projectNameText = state.projectName || DEFAULT_PROJECT_NAME;
+  const projectNameText = formatPrintProjectName(state.projectName || DEFAULT_PROJECT_NAME);
   elements.printArea.innerHTML = groupedDays
     .map((group) => {
       return `
         <div class="print-page">
           <h2 class="print-title">사 진 대 지</h2>
           <div class="print-project-name">
-            <span>현장명</span>
             <strong>${escapeHtml(projectNameText)}</strong>
           </div>
           <table class="print-sheet-table">
@@ -1461,7 +1363,6 @@ async function createNewBoard() {
     saveLocalBoard();
   }
 
-  setListMonthFromCurrentBoard();
   await loadBoardList();
   renderAll();
   showToast("새 사진대지를 만들었습니다.");
@@ -1494,7 +1395,6 @@ async function openBoard(shareCode) {
     createdAt: selectedBoard?.createdAt || "",
     entries: {},
   };
-  setListMonthFromCurrentBoard();
   syncInputsFromState();
   closePhotoViewer();
   renderAll();
@@ -1502,11 +1402,9 @@ async function openBoard(shareCode) {
   if (dbClient) {
     const loaded = await loadCloudBoard();
     if (loaded === null || token !== boardLoadToken || state.shareCode !== shareCode) return;
-    setListMonthFromCurrentBoard();
     await subscribeToChanges();
   } else {
     loadLocalBoard();
-    setListMonthFromCurrentBoard();
   }
 
   if (token !== boardLoadToken || state.shareCode !== shareCode) return;
@@ -1613,7 +1511,6 @@ async function openNextBoardAfterDelete() {
   window.history.replaceState({}, "", url.toString());
 
   resetCurrentBoard();
-  setListMonthFromCurrentBoard();
   renderAll();
   showToast("삭제했습니다. 새 대지를 누르면 새 사진대지가 만들어집니다.");
 }
@@ -1657,7 +1554,7 @@ function isMetaInputFocused() {
 function getKnownPhotoBytes() {
   const listPhotoCount = countVisibleBoardPhotos();
   const currentPhotoCount = Object.values(state.entries || {}).filter((entry) => entry?.photoUrl).length;
-  return Math.max(knownPhotoCount, listPhotoCount, currentPhotoCount) * ESTIMATED_PHOTO_BYTES;
+  return Math.max(listPhotoCount, currentPhotoCount) * ESTIMATED_PHOTO_BYTES;
 }
 
 async function prepareImageFile(file) {
@@ -1690,36 +1587,14 @@ function resizeImage(file, maxWidth = IMAGE_MAX_WIDTH, maxHeight = IMAGE_MAX_HEI
     img.onload = async () => {
       try {
         const ratio = Math.min(1, maxWidth / img.width, maxHeight / img.height);
-        let width = Math.max(1, Math.round(img.width * ratio));
-        let height = Math.max(1, Math.round(img.height * ratio));
-        let quality = IMAGE_QUALITY;
-        let blob = null;
-
-        const renderCanvas = () => {
-          const canvas = document.createElement("canvas");
-          canvas.width = width;
-          canvas.height = height;
-          const context = canvas.getContext("2d");
-          context.drawImage(img, 0, 0, width, height);
-          return canvas;
-        };
-
-        let canvas = renderCanvas();
-        blob = await canvasToJpegBlob(canvas, quality);
-
-        while (blob.size > IMAGE_TARGET_BYTES && (quality > IMAGE_MIN_QUALITY || width > IMAGE_MIN_WIDTH)) {
-          if (quality > IMAGE_MIN_QUALITY) {
-            quality = Math.max(IMAGE_MIN_QUALITY, Number((quality - 0.06).toFixed(2)));
-          } else {
-            const nextWidth = Math.max(IMAGE_MIN_WIDTH, Math.round(width * 0.9));
-            if (nextWidth === width) break;
-            width = nextWidth;
-            height = Math.max(1, Math.round(width * (img.height / img.width)));
-            canvas = renderCanvas();
-          }
-
-          blob = await canvasToJpegBlob(canvas, quality);
-        }
+        const width = Math.max(1, Math.round(img.width * ratio));
+        const height = Math.max(1, Math.round(img.height * ratio));
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d");
+        context.drawImage(img, 0, 0, width, height);
+        const blob = await canvasToJpegBlob(canvas, IMAGE_QUALITY);
 
         URL.revokeObjectURL(url);
         resolve({
@@ -1797,23 +1672,6 @@ function addDays(dateValue, offset) {
   return date;
 }
 
-function addMonths(monthValue, offset) {
-  const date = new Date(`${monthValue || toMonthInputValue(new Date())}-01T00:00:00`);
-  date.setMonth(date.getMonth() + offset);
-  return toMonthInputValue(date);
-}
-
-function getMonthEndDate(monthValue) {
-  const date = new Date(`${monthValue || toMonthInputValue(new Date())}-01T00:00:00`);
-  date.setMonth(date.getMonth() + 1);
-  date.setDate(0);
-  return date;
-}
-
-function getMonthFromDateValue(value) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value || "") ? value.slice(0, 7) : "";
-}
-
 function formatMonthDay(date) {
   return date.toLocaleDateString("ko-KR", {
     month: "2-digit",
@@ -1831,14 +1689,6 @@ function formatListDate(value) {
   return `${month}.${day}.(${weekday})`;
 }
 
-function formatListMonthLabel(value) {
-  const date = new Date(`${value || toMonthInputValue(new Date())}-01T00:00:00`);
-  return date.toLocaleDateString("ko-KR", {
-    year: "numeric",
-    month: "long",
-  });
-}
-
 function formatDateTime(value) {
   return new Date(value).toLocaleString("ko-KR", {
     month: "2-digit",
@@ -1853,12 +1703,6 @@ function toDateInputValue(date) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
-}
-
-function toMonthInputValue(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
 }
 
 function formatBytes(bytes) {
@@ -1919,4 +1763,9 @@ function escapeAttribute(value) {
 
 function normalizeProjectName(value) {
   return String(value || DEFAULT_PROJECT_NAME).replaceAll("(주)서화", "(주)한화");
+}
+
+function formatPrintProjectName(value) {
+  const text = normalizeProjectName(value).replace(/\s*\(주\).*/, "").trim();
+  return text || normalizeProjectName(value);
 }
