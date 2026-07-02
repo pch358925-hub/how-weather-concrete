@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light">
     <meta name="darkreader-lock">
     <title>서중 콘크리트 습윤양생 사진대지</title>
-    <link rel="stylesheet" href="./styles.css?v=20260702-6">
+    <link rel="stylesheet" href="./styles.css?v=20260702-7">
     <script src="./config.js"></script>
   </head>
   <body>
@@ -122,14 +122,22 @@
           </div>
 
           <div class="summary-row">
-            <div id="summaryList" class="summary-list" aria-label="5일 양생 등록 현황"></div>
+            <div id="summaryList" class="summary-list" aria-label="일차별 사진 등록 현황"></div>
           </div>
         </section>
 
         <section class="day-section" aria-label="일차별 사진 등록">
           <div class="section-title-row">
             <div>
-              <h2>5일 습윤양생 사진</h2>
+              <h2 id="photoSectionTitle">습윤양생 사진</h2>
+            </div>
+            <div id="photoTypeTabs" class="photo-type-tabs" role="tablist" aria-label="사진 종류 선택">
+              <button class="photo-type-tab temperature-stealth-tab" type="button" data-photo-type="temperature" role="tab" aria-selected="false" title="온도측정 사진">
+                온도측정
+              </button>
+              <button class="photo-type-tab" type="button" data-photo-type="curing" role="tab" aria-selected="true" title="습윤양생 사진">
+                습윤양생
+              </button>
             </div>
           </div>
           <div id="dayGrid" class="day-grid"></div>
@@ -153,6 +161,6 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-    <script src="./app.js?v=20260702-6"></script>
+    <script src="./app.js?v=20260702-7"></script>
   </body>
 </html>

@@ -333,6 +333,61 @@ input:focus {
   background: var(--surface-soft);
 }
 
+.photo-type-tabs {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.photo-type-tab {
+  min-width: 66px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.photo-type-tab[aria-selected="true"]:not(.temperature-stealth-tab) {
+  border-color: rgba(31, 122, 90, 0.42);
+  background: var(--accent);
+  color: #fff;
+}
+
+.photo-type-tab:not(.temperature-stealth-tab):hover {
+  border-color: rgba(31, 122, 90, 0.38);
+  background: var(--surface-soft);
+}
+
+.photo-type-tab.temperature-stealth-tab {
+  border-color: transparent;
+  background: transparent;
+  color: transparent;
+  box-shadow: none;
+  text-shadow: none;
+}
+
+.photo-type-tab.temperature-stealth-tab:hover,
+.photo-type-tab.temperature-stealth-tab:focus-visible,
+.photo-type-tab.temperature-stealth-tab[aria-selected="true"] {
+  border-color: transparent;
+  background: transparent;
+  color: transparent;
+  outline-color: rgba(31, 122, 90, 0.08);
+}
+
 #standardButton[aria-expanded="true"],
 #searchButton[aria-expanded="true"] {
   border-color: rgba(31, 122, 90, 0.48);
@@ -503,7 +558,7 @@ input:focus {
   min-width: 0;
   min-height: 50px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 24px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto) 24px;
   grid-template-areas:
     "date count delete"
     "part part part";
@@ -579,8 +634,17 @@ input:focus {
   line-height: 1.2;
 }
 
-.board-count {
+.board-counts {
   grid-area: count;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  flex-wrap: wrap;
+}
+
+.board-count {
   min-height: 22px;
   display: inline-flex;
   align-items: center;
@@ -592,10 +656,21 @@ input:focus {
   font-size: 12px;
   font-weight: 900;
   line-height: 1;
+  white-space: nowrap;
 }
 
 .board-count.complete {
   background: var(--accent);
+  color: #fff;
+}
+
+.board-count.temperature {
+  background: #edf4fb;
+  color: #1f5f9c;
+}
+
+.board-count.temperature.complete {
+  background: #1f5f9c;
   color: #fff;
 }
 

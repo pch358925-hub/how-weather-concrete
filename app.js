@@ -1,5 +1,28 @@
 const DEFAULT_PROJECT_NAME = "세종천안 2공구 (주)한화";
 const DAY_COUNT = 5;
+const PHOTO_TYPES = {
+  CURING: "curing",
+  TEMPERATURE: "temperature",
+};
+const PHOTO_MISSING_TEXT = "사진 미등록";
+const RAIN_HOLD_TEXT = "우천으로 인한 양생 대기";
+const DEFAULT_PHOTO_TYPE = PHOTO_TYPES.CURING;
+const PHOTO_TYPE_CONFIG = {
+  [PHOTO_TYPES.CURING]: {
+    label: "습윤양생",
+    sectionTitle: "습윤양생 사진",
+    contentText: "습윤양생",
+    shortLabel: "양생",
+    missingText: PHOTO_MISSING_TEXT,
+  },
+  [PHOTO_TYPES.TEMPERATURE]: {
+    label: "온도측정",
+    sectionTitle: "온도측정 사진",
+    contentText: "온도측정",
+    shortLabel: "온도",
+    missingText: PHOTO_MISSING_TEXT,
+  },
+};
 const LOCAL_PREFIX = "curing-photo-board:";
 const META_DRAFT_PREFIX = `${LOCAL_PREFIX}meta-draft:`;
 const STORAGE_DISPLAY_LIMIT_BYTES = 1024 * 1024 * 1024;
@@ -20,8 +43,6 @@ const PRINT_PHOTO_ROW_HEIGHT_MM = 84;
 const PRINT_INFO_ROW_HEIGHT_MM = 10.525;
 const PRINT_PHOTO_WIDTH_MM = 120;
 const PRINT_PHOTO_HEIGHT_MM = 80;
-const PHOTO_MISSING_TEXT = "사진 미등록";
-const RAIN_HOLD_TEXT = "우천으로 인한 양생 대기";
 
 const elements = {
   standardButton: document.getElementById("standardButton"),
@@ -40,6 +61,8 @@ const elements = {
   pourDateInput: document.getElementById("pourDateInput"),
   prevPourDateButton: document.getElementById("prevPourDateButton"),
   nextPourDateButton: document.getElementById("nextPourDateButton"),
+  photoSectionTitle: document.getElementById("photoSectionTitle"),
+  photoTypeTabs: document.getElementById("photoTypeTabs"),
   summaryList: document.getElementById("summaryList"),
   dayGrid: document.getElementById("dayGrid"),
   printArea: document.getElementById("printArea"),
@@ -65,6 +88,7 @@ let activePhotoMutationCount = 0;
 let boardLoadToken = 0;
 let printPreviewRenderToken = 0;
 let printPreviewTimer = null;
+let activePhotoType = DEFAULT_PHOTO_TYPE;
 let printImageCache = {
   signature: "",
   images: [],
@@ -128,6 +152,11 @@ function bindEvents() {
   elements.newBoardButton.addEventListener("click", createNewBoard);
   elements.prevPourDateButton.addEventListener("click", () => shiftPourDate(-1));
   elements.nextPourDateButton.addEventListener("click", () => shiftPourDate(1));
+  elements.photoTypeTabs?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-photo-type]");
+    if (!button) return;
+    setActivePhotoType(button.dataset.photoType);
+  });
   window.addEventListener("popstate", () => {
     syncUrlToCurrentBoard();
   });
@@ -193,13 +222,14 @@ function bindEvents() {
     if (!target.matches("input[type='file']")) return;
 
     const day = Number(target.dataset.day);
+    const photoType = normalizePhotoType(target.dataset.photoType);
     const files = Array.from(target.files || []);
     target.value = "";
     window.clearTimeout(filePickerClearTimer);
     isFilePickerOpen = false;
     if (!day || !files.length) return;
 
-    await handlePhotoSelection(day, files);
+    await handlePhotoSelection(photoType, day, files);
     await flushPendingRealtimeRefresh();
   });
 
@@ -212,7 +242,7 @@ function bindEvents() {
 
     const previewButton = event.target.closest("[data-preview-day]");
     if (previewButton) {
-      openPhotoViewer(Number(previewButton.dataset.previewDay));
+      openPhotoViewer(Number(previewButton.dataset.previewDay), previewButton.dataset.previewType);
       return;
     }
 
@@ -220,7 +250,7 @@ function bindEvents() {
     if (!deleteButton) return;
 
     const day = Number(deleteButton.dataset.deleteDay);
-    await deletePhoto(day);
+    await deletePhoto(normalizePhotoType(deleteButton.dataset.deleteType), day);
   });
 
   elements.photoViewerClose.addEventListener("click", closePhotoViewer);
@@ -288,6 +318,7 @@ function createShareCode() {
 }
 
 function resetCurrentBoard(options = {}) {
+  activePhotoType = DEFAULT_PHOTO_TYPE;
   const shareCode = options.keepShareCode ? state.shareCode : "";
   state = {
     shareCode,
@@ -322,7 +353,7 @@ function loadLocalBoard() {
         ...parsed,
         shareCode,
         boardId: null,
-        entries: parsed.entries || {},
+        entries: normalizeEntries(parsed.entries || {}),
       };
       state.projectName = normalizeProjectName(state.projectName);
     } catch (error) {
@@ -425,6 +456,7 @@ function applyCloudEntries(entries) {
       photoPath: row.photo_path || "",
       uploadedAt: row.uploaded_at || "",
       rainHold: memo.rainHold,
+      photos: memo.photos || {},
     };
   });
 }
@@ -463,7 +495,8 @@ async function loadCloudBoardList() {
       pourDate: board.pour_date || "",
       createdAt: board.created_at || "",
       updatedAt: board.updated_at || "",
-      completedCount: countCompletedEntries(board.photo_entries || []),
+      completedCount: countCompletedEntries(board.photo_entries || [], PHOTO_TYPES.CURING),
+      temperatureCount: countCompletedEntries(board.photo_entries || [], PHOTO_TYPES.TEMPERATURE),
       photoCount: countPhotoEntries(board.photo_entries || []),
     };
   });
@@ -486,7 +519,8 @@ function loadLocalBoardList() {
           pourDate: parsed.pourDate || "",
           createdAt: parsed.createdAt || parsed.updatedAt || "",
           updatedAt: parsed.updatedAt || "",
-          completedCount: countCompletedEntries(entries),
+          completedCount: countCompletedEntries(entries, PHOTO_TYPES.CURING),
+          temperatureCount: countCompletedEntries(entries, PHOTO_TYPES.TEMPERATURE),
           photoCount: countPhotoEntries(entries),
         };
       } catch {
@@ -513,9 +547,11 @@ async function reconcileCurrentBoardEntries() {
   const current = boardList.find((board) => board.shareCode === state.shareCode);
   if (!current) return;
 
-  const detailCount = countCompletedEntries(state.entries || {});
+  const detailCount = countCompletedEntries(state.entries || {}, PHOTO_TYPES.CURING);
+  const detailPhotoCount = countPhotoEntries(state.entries || {});
   const listCount = Number(current.completedCount || 0);
-  if (detailCount === listCount) return;
+  const listPhotoCount = Number(current.photoCount ?? current.completedCount ?? 0);
+  if (detailCount === listCount && detailPhotoCount === listPhotoCount) return;
 
   if (dbClient && state.boardId) {
     await loadCloudEntries();
@@ -716,13 +752,13 @@ function clearMetaDraft() {
   }
 }
 
-async function saveEntry(day) {
+async function saveEntry(day, photoType = activePhotoType) {
   if (!state.shareCode || (dbClient && !state.boardId)) {
     showToast("새 대지를 먼저 만들어 주세요.");
     return false;
   }
 
-  const saved = await persistEntry(day);
+  const saved = await persistEntry(day, photoType);
   if (!saved) return false;
 
   await loadBoardList();
@@ -730,22 +766,24 @@ async function saveEntry(day) {
   return true;
 }
 
-async function persistEntry(day) {
+async function persistEntry(day, photoType = activePhotoType) {
   const entry = getEntry(day);
+  const normalizedType = normalizePhotoType(photoType);
 
   if (dbClient && state.boardId) {
+    let existing = null;
+    try {
+      existing = await loadExistingCloudEntry(day);
+    } catch (error) {
+      console.error(error);
+      showToast(`${day}일차 기존 저장 정보를 확인하지 못했습니다. 잠시 뒤 다시 시도해 주세요.`);
+      return false;
+    }
+    const payload = createEntryPersistPayload(day, normalizedType, entry, existing);
     const { error } = await dbClient
       .from("photo_entries")
       .upsert(
-        {
-          board_id: state.boardId,
-          day_no: day,
-          photo_url: entry.photoUrl || null,
-          photo_path: entry.photoPath || null,
-          uploaded_at: entry.uploadedAt || null,
-          memo: serializeEntryMemo(entry),
-          updated_at: new Date().toISOString(),
-        },
+        payload,
         { onConflict: "board_id,day_no" }
       );
 
@@ -761,6 +799,63 @@ async function persistEntry(day) {
   return true;
 }
 
+async function loadExistingCloudEntry(day) {
+  if (!dbClient || !state.boardId) return null;
+
+  const { data, error } = await dbClient
+    .from("photo_entries")
+    .select("photo_url, photo_path, uploaded_at, memo")
+    .eq("board_id", state.boardId)
+    .eq("day_no", day)
+    .maybeSingle();
+
+  if (error) throw error;
+
+  return data || null;
+}
+
+function createEntryPersistPayload(day, photoType, entry, existing) {
+  const existingMemo = parseEntryMemo(existing?.memo);
+  const existingEntry = normalizeEntryShape({
+    dayNo: day,
+    photoUrl: existing?.photo_url || "",
+    photoPath: existing?.photo_path || "",
+    uploadedAt: existing?.uploaded_at || "",
+    rainHold: existingMemo.rainHold,
+    photos: existingMemo.photos || {},
+  });
+
+  const merged = normalizeEntryShape({
+    ...existingEntry,
+    ...entry,
+    photos: {
+      ...(existingEntry.photos || {}),
+      ...(entry.photos || {}),
+    },
+  });
+
+  if (photoType !== PHOTO_TYPES.CURING) {
+    merged.photoUrl = existingEntry.photoUrl || entry.photoUrl || "";
+    merged.photoPath = existingEntry.photoPath || entry.photoPath || "";
+    merged.uploadedAt = existingEntry.uploadedAt || entry.uploadedAt || "";
+    merged.rainHold = existingEntry.rainHold || entry.rainHold || false;
+  }
+
+  if (photoType === PHOTO_TYPES.CURING && existingEntry.photos?.[PHOTO_TYPES.TEMPERATURE]) {
+    merged.photos[PHOTO_TYPES.TEMPERATURE] = existingEntry.photos[PHOTO_TYPES.TEMPERATURE];
+  }
+
+  return {
+    board_id: state.boardId,
+    day_no: day,
+    photo_url: merged.photoUrl || null,
+    photo_path: merged.photoPath || null,
+    uploaded_at: merged.uploadedAt || null,
+    memo: serializeEntryMemo(merged),
+    updated_at: new Date().toISOString(),
+  };
+}
+
 function saveLocalBoard() {
   if (!state.shareCode) return false;
 
@@ -773,7 +868,7 @@ function saveLocalBoard() {
         pourDate: state.pourDate,
         createdAt: state.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-        entries: state.entries,
+        entries: normalizeEntries(state.entries),
       })
     );
     renderStorageMeter();
@@ -785,7 +880,9 @@ function saveLocalBoard() {
   }
 }
 
-async function handlePhotoUpload(day, file) {
+async function handlePhotoUpload(photoType, day, file) {
+  const normalizedType = normalizePhotoType(photoType);
+  const typeConfig = getPhotoTypeConfig(normalizedType);
   if (!state.shareCode || (dbClient && !state.boardId)) {
     showToast("새 대지를 먼저 만들어 주세요.");
     return false;
@@ -798,12 +895,16 @@ async function handlePhotoUpload(day, file) {
 
   beginPhotoMutation();
   try {
-    showToast(`${day}일차 사진을 압축하는 중입니다.`);
-    const image = await preparePhotoEntry(day, file);
-    const saved = await saveEntry(day);
-    if (!saved) return false;
+    showToast(`${day}일차 ${typeConfig.label} 사진을 압축하는 중입니다.`);
+    const image = await preparePhotoEntry(normalizedType, day, file);
+    const saved = await saveEntry(day, normalizedType);
+    if (!saved) {
+      setTypedPhoto(getEntry(day), normalizedType, image.previousPhoto);
+      cleanupNewPhotoPath(image.newPath);
+      return false;
+    }
     cleanupOldPhotoPath(image.oldPath, image.newPath);
-    showToast(`${day}일차 사진을 등록했습니다. ${formatBytes(file.size)} → ${formatBytes(image.blob.size)}`);
+    showToast(`${day}일차 ${typeConfig.label} 사진을 등록했습니다. ${formatBytes(file.size)} → ${formatBytes(image.blob.size)}`);
     return true;
   } catch (error) {
     console.error(error);
@@ -814,9 +915,11 @@ async function handlePhotoUpload(day, file) {
   }
 }
 
-async function handlePhotoSelection(startDay, files) {
+async function handlePhotoSelection(photoType, startDay, files) {
+  const normalizedType = normalizePhotoType(photoType);
+  const typeConfig = getPhotoTypeConfig(normalizedType);
   if (files.length <= 1) {
-    await handlePhotoUpload(startDay, files[0]);
+    await handlePhotoUpload(normalizedType, startDay, files[0]);
     return;
   }
 
@@ -835,9 +938,9 @@ async function handlePhotoSelection(startDay, files) {
   if (!targetDays.length) return;
 
   const maxCount = Math.min(targetDays.length, imageFiles.length);
-  const overwriteCount = targetDays.slice(0, maxCount).filter((day) => getEntry(day).photoUrl).length;
+  const overwriteCount = targetDays.slice(0, maxCount).filter((day) => hasEntryPhoto(getEntry(day), normalizedType)).length;
   if (overwriteCount) {
-    const ok = window.confirm(`기존 사진 ${overwriteCount}장을 새 사진으로 바꿀까요?`);
+    const ok = window.confirm(`기존 ${typeConfig.label} 사진 ${overwriteCount}장을 새 사진으로 바꿀까요?`);
     if (!ok) return;
   }
 
@@ -846,7 +949,7 @@ async function handlePhotoSelection(startDay, files) {
   let fileIndex = 0;
   beginPhotoMutation();
   try {
-    showToast(`${targetDays[0]}일차부터 사진 ${maxCount}장을 등록하는 중입니다.`);
+    showToast(`${targetDays[0]}일차부터 ${typeConfig.label} 사진 ${maxCount}장을 등록하는 중입니다.`);
     for (const day of targetDays) {
       if (fileIndex >= imageFiles.length) break;
 
@@ -856,9 +959,13 @@ async function handlePhotoSelection(startDay, files) {
         fileIndex += 1;
 
         try {
-          const image = await preparePhotoEntry(day, file);
-          const saved = await persistEntry(day);
-          if (!saved) throw new Error(`${day}일차 저장 실패`);
+          const image = await preparePhotoEntry(normalizedType, day, file);
+          const saved = await persistEntry(day, normalizedType);
+          if (!saved) {
+            setTypedPhoto(getEntry(day), normalizedType, image.previousPhoto);
+            cleanupNewPhotoPath(image.newPath);
+            throw new Error(`${day}일차 저장 실패`);
+          }
           cleanupOldPhotoPath(image.oldPath, image.newPath);
           completed += 1;
           savedForDay = true;
@@ -877,7 +984,7 @@ async function handlePhotoSelection(startDay, files) {
     const overflowText = overflowCount > 0 ? ` ${overflowCount}장은 5일차를 넘어 제외했습니다.` : "";
     const invalidText = invalidCount > 0 ? ` 이미지가 아닌 파일 ${invalidCount}개는 제외했습니다.` : "";
     const failedText = failed > 0 ? ` 처리 실패 ${failed}장은 건너뛰었습니다.` : "";
-    showToast(`${targetDays[0]}일차부터 ${completed}장 등록했습니다.${failedText}${overflowText}${invalidText}`);
+    showToast(`${targetDays[0]}일차부터 ${typeConfig.label} 사진 ${completed}장 등록했습니다.${failedText}${overflowText}${invalidText}`);
   } catch (error) {
     console.error(error);
     await loadBoardList();
@@ -888,20 +995,27 @@ async function handlePhotoSelection(startDay, files) {
   }
 }
 
-async function preparePhotoEntry(day, file) {
+async function preparePhotoEntry(photoType, day, file) {
+  const normalizedType = normalizePhotoType(photoType);
   const uploadFile = await prepareImageFile(file);
   const image = await resizeImage(uploadFile);
   const entry = getEntry(day);
-  const oldPath = entry.photoPath;
+  const previousPhoto = getTypedPhoto(entry, normalizedType);
+  const oldPath = previousPhoto.photoPath;
   let newPath = "";
-  entry.photoUrl = image.dataUrl;
-  entry.photoPath = "";
-  entry.uploadedAt = new Date().toISOString();
-  entry.sizeBytes = image.blob.size;
-  entry.rainHold = false;
+  const nextPhoto = {
+    photoUrl: image.dataUrl,
+    photoPath: "",
+    uploadedAt: new Date().toISOString(),
+    sizeBytes: image.blob.size,
+  };
+  setTypedPhoto(entry, normalizedType, nextPhoto);
+  if (normalizedType === PHOTO_TYPES.CURING) {
+    entry.rainHold = false;
+  }
 
   if (dbClient && state.boardId) {
-    const path = `${state.shareCode}/day-${day}-${Date.now()}.jpg`;
+    const path = `${state.shareCode}/${normalizedType}/day-${day}-${Date.now()}.jpg`;
     const { error: uploadError } = await dbClient.storage
       .from(config.bucket)
       .upload(path, image.blob, {
@@ -912,8 +1026,11 @@ async function preparePhotoEntry(day, file) {
     if (uploadError) throw uploadError;
 
     const { data } = dbClient.storage.from(config.bucket).getPublicUrl(path);
-    entry.photoUrl = data.publicUrl;
-    entry.photoPath = path;
+    setTypedPhoto(entry, normalizedType, {
+      ...nextPhoto,
+      photoUrl: data.publicUrl,
+      photoPath: path,
+    });
     newPath = path;
   }
 
@@ -921,6 +1038,7 @@ async function preparePhotoEntry(day, file) {
     ...image,
     oldPath,
     newPath,
+    previousPhoto,
   };
 }
 
@@ -930,41 +1048,40 @@ function cleanupOldPhotoPath(oldPath, newPath) {
   }
 }
 
-async function deletePhoto(day) {
+function cleanupNewPhotoPath(newPath) {
+  if (dbClient && newPath) {
+    dbClient.storage.from(config.bucket).remove([newPath]).catch(console.error);
+  }
+}
+
+async function deletePhoto(photoType, day) {
+  const normalizedType = normalizePhotoType(photoType);
+  const typeConfig = getPhotoTypeConfig(normalizedType);
   const entry = getEntry(day);
-  if (!entry.photoUrl) return;
-  const ok = window.confirm(`${day}일차 사진을 삭제할까요?`);
+  const previousPhoto = getTypedPhoto(entry, normalizedType);
+  if (!previousPhoto.photoUrl) return;
+  const ok = window.confirm(`${day}일차 ${typeConfig.label} 사진을 삭제할까요?`);
   if (!ok) return;
 
   endFilePickNow();
   beginPhotoMutation();
-  const previousPath = entry.photoPath;
-  const previousUrl = entry.photoUrl;
-  const previousUploadedAt = entry.uploadedAt;
-  const previousSizeBytes = entry.sizeBytes || 0;
-  entry.photoUrl = "";
-  entry.photoPath = "";
-  entry.uploadedAt = "";
-  entry.sizeBytes = 0;
+  clearTypedPhoto(entry, normalizedType);
   renderAll();
 
   try {
-    const saved = await saveEntry(day);
+    const saved = await saveEntry(day, normalizedType);
     if (!saved) {
-      entry.photoUrl = previousUrl;
-      entry.photoPath = previousPath;
-      entry.uploadedAt = previousUploadedAt;
-      entry.sizeBytes = previousSizeBytes;
+      setTypedPhoto(entry, normalizedType, previousPhoto);
       renderAll();
-      showToast(`${day}일차 사진 삭제 저장에 실패했습니다.`);
+      showToast(`${day}일차 ${typeConfig.label} 사진 삭제 저장에 실패했습니다.`);
       return;
     }
 
-    if (dbClient && previousPath) {
-      dbClient.storage.from(config.bucket).remove([previousPath]).catch(console.error);
+    if (dbClient && previousPhoto.photoPath) {
+      dbClient.storage.from(config.bucket).remove([previousPhoto.photoPath]).catch(console.error);
     }
 
-    showToast(`${day}일차 사진을 삭제했습니다.`);
+    showToast(`${day}일차 ${typeConfig.label} 사진을 삭제했습니다.`);
   } finally {
     await endPhotoMutation();
   }
@@ -982,7 +1099,7 @@ async function toggleRainHold(day) {
   entry.rainHold = !previousRainHold;
   renderAll();
 
-  const saved = await saveEntry(day);
+  const saved = await saveEntry(day, PHOTO_TYPES.CURING);
   if (!saved) {
     entry.rainHold = previousRainHold;
     renderAll();
@@ -1000,59 +1117,239 @@ function getEntry(day) {
       photoUrl: "",
       photoPath: "",
       uploadedAt: "",
+      sizeBytes: 0,
       rainHold: false,
+      photos: {},
     };
   }
+  normalizeEntryShape(state.entries[day]);
   return state.entries[day];
+}
+
+function normalizePhotoType(photoType) {
+  return Object.values(PHOTO_TYPES).includes(photoType) ? photoType : DEFAULT_PHOTO_TYPE;
+}
+
+function getPhotoTypeConfig(photoType = activePhotoType) {
+  return PHOTO_TYPE_CONFIG[normalizePhotoType(photoType)] || PHOTO_TYPE_CONFIG[DEFAULT_PHOTO_TYPE];
+}
+
+function setActivePhotoType(photoType) {
+  const nextType = normalizePhotoType(photoType);
+  if (activePhotoType === nextType) {
+    renderPhotoTypeControls();
+    return;
+  }
+
+  activePhotoType = nextType;
+  renderSummary();
+  if (!isFilePickerOpen) {
+    renderDayGrid();
+  }
+  renderPrintArea();
+  renderPhotoTypeControls();
+}
+
+function renderPhotoTypeControls() {
+  const configForActive = getPhotoTypeConfig(activePhotoType);
+  if (elements.photoSectionTitle) {
+    elements.photoSectionTitle.textContent = configForActive.sectionTitle;
+  }
+
+  elements.photoTypeTabs?.querySelectorAll("[data-photo-type]").forEach((button) => {
+    const selected = normalizePhotoType(button.dataset.photoType) === activePhotoType;
+    button.setAttribute("aria-selected", String(selected));
+    button.classList.toggle("active", selected);
+  });
+}
+
+function normalizeEntryShape(entry) {
+  if (!entry.photos || typeof entry.photos !== "object") {
+    entry.photos = {};
+  }
+
+  if (!entry.dayNo && entry.day_no) {
+    entry.dayNo = entry.day_no;
+  }
+
+  const memo = parseEntryMemo(entry.memo);
+  if (memo.rainHold && entry.rainHold === undefined) {
+    entry.rainHold = true;
+  }
+
+  if (memo.photos?.[PHOTO_TYPES.TEMPERATURE] && !entry.photos[PHOTO_TYPES.TEMPERATURE]) {
+    entry.photos[PHOTO_TYPES.TEMPERATURE] = memo.photos[PHOTO_TYPES.TEMPERATURE];
+  }
+
+  return entry;
+}
+
+function normalizeEntries(entries) {
+  Object.values(entries || {}).forEach(normalizeEntryShape);
+  return entries || {};
 }
 
 function isRainHoldEntry(entry) {
   return entry?.rainHold === true || entry?.rainHold === "true";
 }
 
-function hasEntryPhoto(entry) {
-  return Boolean(entry?.photoUrl || entry?.photo_url);
+function getTypedPhoto(entry, photoType = activePhotoType) {
+  const normalizedType = normalizePhotoType(photoType);
+  const source = normalizeEntryShape(entry || {});
+
+  if (normalizedType === PHOTO_TYPES.CURING) {
+    return {
+      photoUrl: source.photoUrl || source.photo_url || "",
+      photoPath: source.photoPath || source.photo_path || "",
+      uploadedAt: source.uploadedAt || source.uploaded_at || "",
+      sizeBytes: Number(source.sizeBytes || 0),
+    };
+  }
+
+  const typed = source.photos?.[normalizedType] || {};
+  return {
+    photoUrl: typed.photoUrl || typed.photo_url || "",
+    photoPath: typed.photoPath || typed.photo_path || "",
+    uploadedAt: typed.uploadedAt || typed.uploaded_at || "",
+    sizeBytes: Number(typed.sizeBytes || 0),
+  };
 }
 
-function isCompletedEntry(entry) {
-  return hasEntryPhoto(entry) || isRainHoldEntry(entry) || parseEntryMemo(entry?.memo).rainHold;
+function setTypedPhoto(entry, photoType, photo) {
+  const normalizedType = normalizePhotoType(photoType);
+  normalizeEntryShape(entry);
+
+  if (normalizedType === PHOTO_TYPES.CURING) {
+    entry.photoUrl = photo.photoUrl || "";
+    entry.photoPath = photo.photoPath || "";
+    entry.uploadedAt = photo.uploadedAt || "";
+    entry.sizeBytes = Number(photo.sizeBytes || 0);
+    return;
+  }
+
+  entry.photos[normalizedType] = {
+    photoUrl: photo.photoUrl || "",
+    photoPath: photo.photoPath || "",
+    uploadedAt: photo.uploadedAt || "",
+    sizeBytes: Number(photo.sizeBytes || 0),
+  };
 }
 
-function countCompletedEntries(entries) {
-  return Object.values(entries || {}).filter(isCompletedEntry).length;
+function clearTypedPhoto(entry, photoType) {
+  setTypedPhoto(entry, photoType, {
+    photoUrl: "",
+    photoPath: "",
+    uploadedAt: "",
+    sizeBytes: 0,
+  });
+}
+
+function hasEntryPhoto(entry, photoType = PHOTO_TYPES.CURING) {
+  return Boolean(getTypedPhoto(entry, photoType).photoUrl);
+}
+
+function isCompletedEntry(entry, photoType = PHOTO_TYPES.CURING) {
+  if (normalizePhotoType(photoType) === PHOTO_TYPES.CURING) {
+    return hasEntryPhoto(entry, PHOTO_TYPES.CURING) || isRainHoldEntry(normalizeEntryShape(entry || {})) || parseEntryMemo(entry?.memo).rainHold;
+  }
+
+  return hasEntryPhoto(entry, photoType);
+}
+
+function countCompletedEntries(entries, photoType = PHOTO_TYPES.CURING) {
+  return Object.values(entries || {}).filter((entry) => isCompletedEntry(entry, photoType)).length;
 }
 
 function countPhotoEntries(entries) {
-  return Object.values(entries || {}).filter(hasEntryPhoto).length;
+  return Object.values(entries || {}).reduce((count, entry) => {
+    return count + Object.values(PHOTO_TYPES).filter((photoType) => hasEntryPhoto(entry, photoType)).length;
+  }, 0);
 }
 
-function getEmptyPhotoText(day) {
-  return isRainHoldEntry(getEntry(day)) ? RAIN_HOLD_TEXT : PHOTO_MISSING_TEXT;
+function collectPhotoStoragePaths(entries) {
+  const paths = [];
+  Object.values(entries || {}).forEach((entry) => {
+    const normalizedEntry = normalizeEntryShape({
+      photoPath: entry?.photoPath || entry?.photo_path || "",
+      memo: entry?.memo,
+      photos: entry?.photos || {},
+    });
+
+    const curingPath = getTypedPhoto(normalizedEntry, PHOTO_TYPES.CURING).photoPath;
+    if (curingPath) paths.push(curingPath);
+
+    Object.values(PHOTO_TYPES).forEach((photoType) => {
+      if (photoType === PHOTO_TYPES.CURING) return;
+      const path = getTypedPhoto(normalizedEntry, photoType).photoPath;
+      if (path) paths.push(path);
+    });
+  });
+
+  return Array.from(new Set(paths));
 }
 
-function getPrintMissingPhotoText(day) {
-  return getEmptyPhotoText(day);
+function getEmptyPhotoText(day, photoType = activePhotoType) {
+  if (normalizePhotoType(photoType) === PHOTO_TYPES.CURING && isRainHoldEntry(getEntry(day))) {
+    return RAIN_HOLD_TEXT;
+  }
+
+  return getPhotoTypeConfig(photoType).missingText;
+}
+
+function getPrintMissingPhotoText(day, photoType = activePhotoType) {
+  return getEmptyPhotoText(day, photoType);
 }
 
 function parseEntryMemo(memo) {
-  if (!memo) return { rainHold: false };
+  if (!memo) return { rainHold: false, photos: {} };
   if (typeof memo === "object") {
-    return { rainHold: memo.rainHold === true || memo.rainHold === "true" };
+    return normalizeEntryMemo(memo);
   }
 
   try {
     const parsed = JSON.parse(memo);
-    return { rainHold: parsed?.rainHold === true || parsed?.rainHold === "true" };
+    return normalizeEntryMemo(parsed);
   } catch {
-    return { rainHold: false };
+    return { rainHold: false, photos: {} };
   }
 }
 
 function serializeEntryMemo(entry) {
-  return isRainHoldEntry(entry) ? JSON.stringify({ rainHold: true }) : "";
+  const memo = normalizeEntryMemo({
+    rainHold: isRainHoldEntry(entry),
+    photos: entry?.photos || {},
+  });
+  const hasPhotos = Object.values(memo.photos || {}).some((photo) => Boolean(photo?.photoUrl || photo?.photoPath));
+  if (!memo.rainHold && !hasPhotos) return "";
+  return JSON.stringify(memo);
+}
+
+function normalizeEntryMemo(memo) {
+  const normalized = {
+    rainHold: memo?.rainHold === true || memo?.rainHold === "true",
+    photos: {},
+  };
+
+  const temperature = memo?.photos?.[PHOTO_TYPES.TEMPERATURE] || memo?.temperature || memo?.temperaturePhoto || {};
+  const photoUrl = temperature.photoUrl || temperature.photo_url || memo?.temperaturePhotoUrl || "";
+  const photoPath = temperature.photoPath || temperature.photo_path || memo?.temperaturePhotoPath || "";
+  const uploadedAt = temperature.uploadedAt || temperature.uploaded_at || memo?.temperatureUploadedAt || "";
+  const sizeBytes = Number(temperature.sizeBytes || memo?.temperatureSizeBytes || 0);
+
+  if (photoUrl || photoPath || uploadedAt || sizeBytes) {
+    normalized.photos[PHOTO_TYPES.TEMPERATURE] = {
+      photoUrl,
+      photoPath,
+      uploadedAt,
+      sizeBytes,
+    };
+  }
+
+  return normalized;
 }
 
 function renderAll() {
+  renderPhotoTypeControls();
   renderBoardList();
   renderSummary();
   if (!isFilePickerOpen) {
@@ -1063,6 +1360,7 @@ function renderAll() {
 }
 
 function renderMetaPreview() {
+  renderPhotoTypeControls();
   renderSummary();
   if (!isFilePickerOpen) {
     renderDayGrid();
@@ -1143,12 +1441,15 @@ function renderBoardList() {
   elements.boardList.innerHTML = visibleBoards
     .map((board) => {
       const active = board.shareCode === state.shareCode;
+      const curingCount = Number(board.completedCount || 0);
+      const temperatureCount = Number(board.temperatureCount || 0);
       return `
         <div class="board-list-item ${active ? "active" : ""}" data-board-code="${escapeAttribute(board.shareCode)}">
           <span class="board-date">${escapeHtml(formatListDate(board.pourDate))}</span>
           <span class="board-part">${escapeHtml(board.pourPart)}</span>
-          <span class="board-count ${board.completedCount === DAY_COUNT ? "complete" : ""}">
-            ${board.completedCount}/${DAY_COUNT}
+          <span class="board-counts">
+            <span class="board-count ${curingCount === DAY_COUNT ? "complete" : ""}">양생 ${curingCount}/${DAY_COUNT}</span>
+            <span class="board-count temperature ${temperatureCount === DAY_COUNT ? "complete" : ""}">온도 ${temperatureCount}/${DAY_COUNT}</span>
           </span>
           <button class="board-delete-button" type="button" data-delete-board-code="${escapeAttribute(board.shareCode)}" title="사진대지 삭제">×</button>
         </div>
@@ -1218,11 +1519,12 @@ function normalizeSearchText(value) {
 }
 
 function renderSummary() {
+  const photoType = activePhotoType;
   elements.summaryList.innerHTML = days()
     .map((day) => {
       const entry = getEntry(day);
-      const hasPhoto = Boolean(entry.photoUrl);
-      const rainHold = isRainHoldEntry(entry);
+      const hasPhoto = hasEntryPhoto(entry, photoType);
+      const rainHold = photoType === PHOTO_TYPES.CURING && isRainHoldEntry(entry);
       const statusText = hasPhoto ? "등록" : rainHold ? "우천대기" : "미등록";
       return `
         <button class="summary-item ${hasPhoto ? "done" : ""} ${rainHold ? "rain-hold" : ""}" type="button" data-summary-day="${day}">
@@ -1247,26 +1549,33 @@ async function renderStorageMeter() {
 }
 
 function renderDayGrid() {
+  const photoType = activePhotoType;
+  const typeConfig = getPhotoTypeConfig(photoType);
   elements.dayGrid.innerHTML = days()
     .map((day) => {
       const entry = getEntry(day);
-      const hasPhoto = Boolean(entry.photoUrl);
-      const rainHold = isRainHoldEntry(entry);
-      const emptyPhotoText = getEmptyPhotoText(day);
+      const photo = getTypedPhoto(entry, photoType);
+      const hasPhoto = Boolean(photo.photoUrl);
+      const rainHold = photoType === PHOTO_TYPES.CURING && isRainHoldEntry(entry);
+      const emptyPhotoText = getEmptyPhotoText(day, photoType);
       return `
         <article class="day-card ${hasPhoto ? "complete" : ""} ${rainHold ? "rain-hold" : ""}" data-day-card="${day}">
           <div class="day-card-header">
             <h3>${day}일차</h3>
-            <button class="rain-toggle ${rainHold ? "active" : ""}" type="button" data-rain-day="${day}" aria-pressed="${rainHold}" title="${day}일차 우천 대기 표시" aria-label="${day}일차 우천 대기 표시">
-              <span aria-hidden="true">☔</span>
-            </button>
+            ${
+              photoType === PHOTO_TYPES.CURING
+                ? `<button class="rain-toggle ${rainHold ? "active" : ""}" type="button" data-rain-day="${day}" aria-pressed="${rainHold}" title="${day}일차 우천 대기 표시" aria-label="${day}일차 우천 대기 표시">
+                    <span aria-hidden="true">☔</span>
+                  </button>`
+                : ""
+            }
             <span class="date-pill">${formatDayDate(day)}</span>
           </div>
           <div class="photo-preview">
             ${
               hasPhoto
-                ? `<button class="photo-preview-button" type="button" data-preview-day="${day}" title="${day}일차 사진 크게 보기">
-                    <img src="${escapeAttribute(entry.photoUrl)}" alt="${day}일차 습윤양생 사진" loading="lazy" decoding="async">
+                ? `<button class="photo-preview-button" type="button" data-preview-day="${day}" data-preview-type="${escapeAttribute(photoType)}" title="${day}일차 사진 크게 보기">
+                    <img src="${escapeAttribute(photo.photoUrl)}" alt="${day}일차 ${escapeAttribute(typeConfig.label)} 사진" loading="lazy" decoding="async">
                   </button>`
                 : `<div class="empty-photo ${rainHold ? "rain-hold" : ""}"><span>${escapeHtml(emptyPhotoText)}</span></div>`
             }
@@ -1275,22 +1584,22 @@ function renderDayGrid() {
             <div class="upload-row">
               <div class="file-control">
                 <label class="file-control-title" for="camera-${day}">▣ 촬영</label>
-                <input id="camera-${day}" class="file-input" data-day="${day}" type="file" accept="image/*" capture="environment" aria-label="${day}일차 사진 촬영">
+                <input id="camera-${day}" class="file-input" data-day="${day}" data-photo-type="${escapeAttribute(photoType)}" type="file" accept="image/*" capture="environment" aria-label="${day}일차 ${escapeAttribute(typeConfig.label)} 사진 촬영">
               </div>
               <div class="file-control">
                 <label class="file-control-title" for="gallery-${day}">＋ 첨부</label>
-                <input id="gallery-${day}" class="file-input" data-day="${day}" type="file" accept="image/*" multiple aria-label="${day}일차 사진 첨부">
+                <input id="gallery-${day}" class="file-input" data-day="${day}" data-photo-type="${escapeAttribute(photoType)}" type="file" accept="image/*" multiple aria-label="${day}일차 ${escapeAttribute(typeConfig.label)} 사진 첨부">
               </div>
               ${
                 hasPhoto
-                  ? `<button class="small-button danger-button" type="button" data-delete-day="${day}">
+                  ? `<button class="small-button danger-button" type="button" data-delete-day="${day}" data-delete-type="${escapeAttribute(photoType)}">
                       <span class="button-icon" aria-hidden="true">×</span>
                       <span>삭제</span>
                     </button>`
                   : ""
               }
             </div>
-            ${hasPhoto ? `<div class="uploaded-meta">${renderUploadedMeta(entry)}</div>` : ""}
+            ${hasPhoto ? `<div class="uploaded-meta">${renderUploadedMeta(photo)}</div>` : ""}
           </div>
         </article>
       `;
@@ -1331,94 +1640,26 @@ function renderPrintPreviewImages(images) {
     .join("");
 }
 
-function renderPrintBlock(day) {
-  if (!day) {
-    return `
-      <tr class="print-photo-row print-empty-row"><td colspan="3"></td></tr>
-      <tr class="print-info-row print-empty-row"><td></td><td></td><td></td></tr>
-      <tr class="print-content-row print-empty-row"><td></td><td colspan="2"></td></tr>
-    `;
-  }
-
-  const entry = getEntry(day);
-  const locationText = state.pourPart || "";
-  const locationTextClass = getPrintMainTextClass(locationText);
-  const contentText = "습윤양생";
-
-  return `
-    <tr class="print-photo-row">
-      <td colspan="3">
-        <div class="print-photo-frame">
-          ${
-            entry.photoUrl
-              ? `<img src="${escapeAttribute(entry.photoUrl)}" alt="${day}일차 습윤양생 사진" loading="lazy" decoding="async">`
-              : `<span class="print-placeholder">${escapeHtml(getPrintMissingPhotoText(day))}</span>`
-          }
-        </div>
-      </td>
-    </tr>
-    <tr class="print-info-row">
-      <td class="print-label">위&nbsp;&nbsp;치</td>
-      <td class="print-main"><span class="print-main-text${locationTextClass}">${formatPrintMainText(locationText, { breakAfterFirstBracket: true })}</span></td>
-      <td class="print-day">${day}일차</td>
-    </tr>
-    <tr class="print-content-row">
-      <td class="print-label">내&nbsp;&nbsp;용</td>
-      <td colspan="2" class="print-main"><span class="print-main-text">${formatPrintMainText(contentText)}</span></td>
-    </tr>
-  `;
-}
-
-function getPrintMainTextClass(text) {
-  const lengthScore = getPrintTextLengthScore(text);
-
-  if (lengthScore > 70) return " print-main-text-xs";
-  if (lengthScore > 52) return " print-main-text-sm";
-  return "";
-}
-
 function getPrintTextLengthScore(text) {
   return Array.from(String(text)).reduce((score, char) => {
     return score + (char.charCodeAt(0) <= 0x7f ? 0.55 : 1);
   }, 0);
 }
 
-function formatPrintMainText(value, options = {}) {
-  const chars = Array.from(String(value));
-  const bracketBreaks = new Set([")", "]", "}"]);
-  const hintBreaks = new Set([","]);
-  const shouldBreakAfterBracket = options.breakAfterFirstBracket && getPrintTextLengthScore(value) > 18;
-  let bracketBreakUsed = false;
-
-  return chars.map((char, index) => {
-    const escaped = escapeHtml(char);
-    if (
-      shouldBreakAfterBracket &&
-      !bracketBreakUsed &&
-      bracketBreaks.has(char) &&
-      index < chars.length - 1
-    ) {
-      bracketBreakUsed = true;
-      return `${escaped}<br>`;
-    }
-
-    const breakHint = hintBreaks.has(char) ? "<wbr>" : "";
-    return `${escaped}${breakHint}`;
-  }).join("");
-}
-
-function renderUploadedMeta(entry) {
-  if (!entry.photoUrl) return "";
-  const time = entry.uploadedAt ? formatDateTime(entry.uploadedAt) : "";
+function renderUploadedMeta(photo) {
+  if (!photo.photoUrl) return "";
+  const time = photo.uploadedAt ? formatDateTime(photo.uploadedAt) : "";
   return time ? `등록 ${escapeHtml(time)} · 자동 압축` : "자동 압축";
 }
 
-function openPhotoViewer(day) {
-  const entry = getEntry(day);
-  if (!entry.photoUrl) return;
+function openPhotoViewer(day, photoType = activePhotoType) {
+  const normalizedType = normalizePhotoType(photoType);
+  const typeConfig = getPhotoTypeConfig(normalizedType);
+  const photo = getTypedPhoto(getEntry(day), normalizedType);
+  if (!photo.photoUrl) return;
 
-  elements.photoViewerImage.src = entry.photoUrl;
-  elements.photoViewerImage.alt = `${day}일차 습윤양생 사진`;
+  elements.photoViewerImage.src = photo.photoUrl;
+  elements.photoViewerImage.alt = `${day}일차 ${typeConfig.label} 사진`;
   elements.photoViewer.hidden = false;
   document.body.classList.add("viewer-open");
 }
@@ -1437,12 +1678,15 @@ function closePhotoViewer() {
 }
 
 function getPrintImageSignature() {
+  const photoType = activePhotoType;
   const entries = days().map((day) => {
     const entry = getEntry(day);
-    return [day, entry.photoUrl || "", entry.uploadedAt || "", isRainHoldEntry(entry)];
+    const photo = getTypedPhoto(entry, photoType);
+    return [day, photo.photoUrl || "", photo.uploadedAt || "", photoType === PHOTO_TYPES.CURING && isRainHoldEntry(entry)];
   });
 
   return JSON.stringify({
+    photoType,
     projectName: state.projectName || "",
     pourPart: state.pourPart || "",
     pourDate: state.pourDate || "",
@@ -1456,16 +1700,18 @@ async function getPrintPageImages() {
     return printImageCache.images;
   }
 
-  const photos = await loadPrintPhotos();
-  const images = PRINT_PAGE_GROUPS.map((group) => createPrintPageImage(group, photos));
+  const photoType = activePhotoType;
+  const photos = await loadPrintPhotos(photoType);
+  const images = PRINT_PAGE_GROUPS.map((group) => createPrintPageImage(group, photos, photoType));
   printImageCache = { signature, images };
   return images;
 }
 
-async function loadPrintPhotos() {
+async function loadPrintPhotos(photoType = activePhotoType) {
+  const normalizedType = normalizePhotoType(photoType);
   const photoPairs = await Promise.all(
     days().map(async (day) => {
-      const photoUrl = getEntry(day).photoUrl;
+      const photoUrl = getTypedPhoto(getEntry(day), normalizedType).photoUrl;
       if (!photoUrl) return [day, null];
       const image = await loadPrintPhoto(photoUrl);
       return [day, image];
@@ -1487,13 +1733,13 @@ function loadPrintPhoto(src) {
   });
 }
 
-function createPrintPageImage(group, photos) {
-  let canvas = drawPrintPage(group, photos, true);
+function createPrintPageImage(group, photos, photoType = activePhotoType) {
+  let canvas = drawPrintPage(group, photos, true, photoType);
   try {
     return canvas.toDataURL("image/png");
   } catch (error) {
     console.warn("Photo canvas export failed. Retrying without photos.", error);
-    canvas = drawPrintPage(group, photos, false);
+    canvas = drawPrintPage(group, photos, false, photoType);
     return canvas.toDataURL("image/png");
   }
 }
@@ -1506,7 +1752,7 @@ function printPt(value) {
   return value * (96 / 72) * (PRINT_MM_SCALE / (96 / 25.4));
 }
 
-function drawPrintPage(group, photos, allowPhotos) {
+function drawPrintPage(group, photos, allowPhotos, photoType = activePhotoType) {
   const canvas = document.createElement("canvas");
   canvas.width = Math.round(printMm(PRINT_PAGE_WIDTH_MM));
   canvas.height = Math.round(printMm(PRINT_PAGE_HEIGHT_MM));
@@ -1520,7 +1766,7 @@ function drawPrintPage(group, photos, allowPhotos) {
 
   drawPrintTitle(ctx);
   drawPrintProjectName(ctx);
-  drawPrintTable(ctx, group, photos, allowPhotos);
+  drawPrintTable(ctx, group, photos, allowPhotos, photoType);
 
   return canvas;
 }
@@ -1565,18 +1811,18 @@ function drawPrintProjectName(ctx) {
   ctx.restore();
 }
 
-function drawPrintTable(ctx, group, photos, allowPhotos) {
+function drawPrintTable(ctx, group, photos, allowPhotos, photoType = activePhotoType) {
   const tableX = printMm((PRINT_PAGE_WIDTH_MM - PRINT_TABLE_WIDTH_MM) / 2);
   const titleHeightMm = 22 * 25.4 / 72;
   const tableY = printMm(15 + titleHeightMm + 16.9);
   const blockHeight = printMm(PRINT_TABLE_HEIGHT_MM / 2);
 
   group.forEach((day, index) => {
-    drawPrintBlockCanvas(ctx, day, tableX, tableY + blockHeight * index, photos, allowPhotos);
+    drawPrintBlockCanvas(ctx, day, tableX, tableY + blockHeight * index, photos, allowPhotos, photoType);
   });
 }
 
-function drawPrintBlockCanvas(ctx, day, x, y, photos, allowPhotos) {
+function drawPrintBlockCanvas(ctx, day, x, y, photos, allowPhotos, photoType = activePhotoType) {
   const tableW = printMm(PRINT_TABLE_WIDTH_MM);
   const labelW = printMm(PRINT_LABEL_WIDTH_MM);
   const mainW = printMm(PRINT_MAIN_WIDTH_MM);
@@ -1596,14 +1842,14 @@ function drawPrintBlockCanvas(ctx, day, x, y, photos, allowPhotos) {
 
   if (!day) return;
 
-  drawPrintPhoto(ctx, day, x, y, tableW, photoH, photos[day], allowPhotos);
+  drawPrintPhoto(ctx, day, x, y, tableW, photoH, photos[day], allowPhotos, photoType);
   drawCenteredPrintText(ctx, "위  치", x, infoY, labelW, infoH, 13, "Batang, serif");
   drawPrintMainTextCanvas(ctx, state.pourPart || "", x + labelW, infoY, mainW, infoH, {
     breakAfterFirstBracket: true,
   });
   drawCenteredPrintText(ctx, `${day}일차`, x + labelW + mainW, infoY, dayW, infoH, 13, "Batang, serif");
   drawCenteredPrintText(ctx, "내  용", x, contentY, labelW, contentH, 13, "Batang, serif");
-  drawPrintMainTextCanvas(ctx, "습윤양생", x + labelW, contentY, mainW + dayW, contentH);
+  drawPrintMainTextCanvas(ctx, getPhotoTypeConfig(photoType).contentText, x + labelW, contentY, mainW + dayW, contentH);
 }
 
 function drawPrintCell(ctx, x, y, width, height) {
@@ -1616,7 +1862,7 @@ function drawPrintCell(ctx, x, y, width, height) {
   ctx.restore();
 }
 
-function drawPrintPhoto(ctx, day, x, y, width, height, image, allowPhotos) {
+function drawPrintPhoto(ctx, day, x, y, width, height, image, allowPhotos, photoType = activePhotoType) {
   const photoW = printMm(PRINT_PHOTO_WIDTH_MM);
   const photoH = printMm(PRINT_PHOTO_HEIGHT_MM);
   const photoX = x + (width - photoW) / 2;
@@ -1629,7 +1875,7 @@ function drawPrintPhoto(ctx, day, x, y, width, height, image, allowPhotos) {
   if (allowPhotos && image) {
     drawCoverImage(ctx, image, photoX, photoY, photoW, photoH);
   } else {
-    drawCenteredPrintText(ctx, getPrintMissingPhotoText(day), photoX, photoY, photoW, photoH, 13, "Batang, serif");
+    drawCenteredPrintText(ctx, getPrintMissingPhotoText(day, photoType), photoX, photoY, photoW, photoH, 13, "Batang, serif");
   }
 
   ctx.restore();
@@ -1904,44 +2150,6 @@ function writeRasterPrintDocument(printWindow, images) {
   printWindow.document.close();
 }
 
-async function ensurePrintImagesReady() {
-  const images = Array.from(elements.printArea.querySelectorAll("img"));
-  await Promise.all(images.map((img) => waitForImage(img).catch(console.warn)));
-}
-
-function waitForImage(img) {
-  img.loading = "eager";
-  img.decoding = "sync";
-  if (img.complete && img.naturalWidth > 0) return Promise.resolve();
-
-  return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
-      cleanup();
-      reject(new Error("Print image load timed out"));
-    }, 8000);
-
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      img.removeEventListener("load", onLoad);
-      img.removeEventListener("error", onError);
-    };
-    const onLoad = () => {
-      cleanup();
-      resolve();
-    };
-    const onError = () => {
-      cleanup();
-      reject(new Error("Print image load failed"));
-    };
-
-    img.addEventListener("load", onLoad, { once: true });
-    img.addEventListener("error", onError, { once: true });
-    if (img.currentSrc || img.src) {
-      img.src = img.currentSrc || img.src;
-    }
-  });
-}
-
 async function createNewBoard() {
   if (activePhotoMutationCount > 0) {
     showToast("사진 등록이 끝난 뒤 새 사진대지를 만들어 주세요.");
@@ -1951,6 +2159,7 @@ async function createNewBoard() {
   window.clearTimeout(metaSaveTimer);
   metaSaveTimer = null;
   boardLoadToken += 1;
+  activePhotoType = DEFAULT_PHOTO_TYPE;
 
   const url = new URL(window.location.href);
   const shareCode = createShareCode();
@@ -1988,6 +2197,7 @@ async function openBoard(shareCode) {
 
   window.clearTimeout(metaSaveTimer);
   metaSaveTimer = null;
+  activePhotoType = DEFAULT_PHOTO_TYPE;
   if (state.shareCode && shareCode !== state.shareCode) {
     await saveMeta();
   }
@@ -2036,7 +2246,7 @@ async function deleteBoard(shareCode) {
   if (dbClient) {
     const { data: board, error } = await dbClient
       .from("photo_boards")
-      .select("id, photo_entries(photo_path)")
+      .select("id, photo_entries(photo_path, memo)")
       .eq("share_code", shareCode)
       .maybeSingle();
 
@@ -2081,7 +2291,7 @@ async function deleteBoard(shareCode) {
         }
       }
 
-      const paths = (board.photo_entries || []).map((entry) => entry.photo_path).filter(Boolean);
+      const paths = collectPhotoStoragePaths(board.photo_entries || []);
       if (paths.length) {
         dbClient.storage.from(config.bucket).remove(paths).catch(console.error);
       }
@@ -2164,7 +2374,7 @@ function isMetaInputFocused() {
 
 function getKnownPhotoBytes() {
   const listPhotoCount = countVisibleBoardPhotos();
-  const currentPhotoCount = Object.values(state.entries || {}).filter((entry) => entry?.photoUrl).length;
+  const currentPhotoCount = countPhotoEntries(state.entries || {});
   return Math.max(listPhotoCount, currentPhotoCount) * ESTIMATED_PHOTO_BYTES;
 }
 
