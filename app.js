@@ -61,6 +61,7 @@ document.addEventListener("DOMContentLoaded", init);
 
 async function init() {
   state.shareCode = ensureShareCode();
+  applyRuntimeLayoutFixes();
   bindEvents();
   setSyncStatus("저장소를 확인하는 중입니다.");
 
@@ -77,6 +78,146 @@ async function init() {
   }
 
   renderAll();
+}
+
+function applyRuntimeLayoutFixes() {
+  document.querySelectorAll(".month-filter").forEach((element) => {
+    element.remove();
+  });
+
+  if (document.getElementById("runtimeLayoutFixes")) return;
+  const style = document.createElement("style");
+  style.id = "runtimeLayoutFixes";
+  style.textContent = `
+    .month-filter {
+      display: none !important;
+    }
+
+    .board-list-section .panel-heading {
+      display: flex !important;
+      align-items: center !important;
+      flex-direction: row !important;
+      justify-content: space-between !important;
+    }
+
+    .board-list-section .list-tools {
+      width: auto !important;
+      flex: 1 1 auto !important;
+      min-width: 0 !important;
+      justify-content: flex-end !important;
+      flex-wrap: nowrap !important;
+    }
+
+    .storage-meter {
+      order: 0 !important;
+      width: min(230px, 32vw) !important;
+      min-width: 150px !important;
+    }
+
+    .print-project-name {
+      width: 152mm !important;
+      max-width: 100% !important;
+      display: block !important;
+      grid-template-columns: none !important;
+      min-height: 6mm !important;
+      margin: 0 auto 6mm !important;
+      border: 0 !important;
+      text-align: right !important;
+      font-family: "HCR Batang", "HYMyeongJo-Extra", "함초롬바탕", "Batang", serif !important;
+      font-size: 12pt !important;
+      color: #000 !important;
+    }
+
+    .print-project-name span {
+      display: none !important;
+    }
+
+    .print-project-name strong {
+      padding: 0 !important;
+      font: inherit !important;
+      font-weight: 900 !important;
+      white-space: nowrap !important;
+      overflow-wrap: normal !important;
+    }
+
+    @media screen {
+      .print-area {
+        gap: 10px !important;
+      }
+
+      .print-page {
+        width: min(360px, calc(100vw - 44px)) !important;
+        max-width: 100% !important;
+        padding: 14px 12px !important;
+      }
+
+      .print-title,
+      .print-project-name,
+      .print-sheet-table {
+        width: 100% !important;
+      }
+
+      .print-title {
+        margin-bottom: 10px !important;
+        font-size: 18px !important;
+        text-decoration-thickness: 1px !important;
+        text-underline-offset: 3px !important;
+      }
+
+      .print-project-name {
+        min-height: auto !important;
+        margin-bottom: 10px !important;
+        font-size: 13px !important;
+      }
+
+      .print-sheet-table {
+        height: auto !important;
+        font-size: 12px !important;
+      }
+
+      .print-col-label {
+        width: 52px !important;
+      }
+
+      .print-col-main {
+        width: auto !important;
+      }
+
+      .print-col-day {
+        width: 48px !important;
+      }
+
+      .print-photo-row {
+        height: 126px !important;
+      }
+
+      .print-info-row,
+      .print-content-row {
+        height: 24px !important;
+      }
+
+      .print-photo-frame {
+        width: min(100%, 180px) !important;
+        height: 120px !important;
+      }
+
+      .print-main {
+        padding: 0 8px !important;
+      }
+
+      .print-placeholder {
+        font-size: 12px !important;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .storage-meter {
+        width: min(180px, 48vw) !important;
+        min-width: 140px !important;
+      }
+    }
+  `;
+  document.head.appendChild(style);
 }
 
 function bindEvents() {
