@@ -7,6 +7,9 @@ const PHOTO_TYPES = {
 const PHOTO_MISSING_TEXT = "사진 미등록";
 const RAIN_HOLD_TEXT = "우천으로 인한 양생 대기";
 const DEFAULT_PHOTO_TYPE = PHOTO_TYPES.CURING;
+const TEMPERATURE_VISIBILITY_STORAGE_KEY = "concrete-photo-board-ui:temperature-visible";
+const TEMPERATURE_SHOW_CODE = "표시";
+const TEMPERATURE_HIDE_CODE = "숨김";
 const PHOTO_TYPE_CONFIG = {
   [PHOTO_TYPES.CURING]: {
     label: "습윤양생",
@@ -14,13 +17,19 @@ const PHOTO_TYPE_CONFIG = {
     contentText: "습윤양생",
     shortLabel: "양생",
     missingText: PHOTO_MISSING_TEXT,
+    slotLabel: (slot) => `${slot}일차`,
+    slotDateLabel: (slot) => formatDayDate(slot),
+    slotCompactLabel: (slot) => formatCompactDayDate(slot),
   },
   [PHOTO_TYPES.TEMPERATURE]: {
     label: "온도측정",
     sectionTitle: "온도측정 사진",
     contentText: "온도측정",
-    shortLabel: "온도",
+    shortLabel: "측정",
     missingText: PHOTO_MISSING_TEXT,
+    slotLabel: (slot) => `측정 ${slot}`,
+    slotDateLabel: () => "필요 시",
+    slotCompactLabel: () => "순번",
   },
 };
 const LOCAL_PREFIX = "curing-photo-board:";
@@ -43,10 +52,58 @@ const PRINT_PHOTO_ROW_HEIGHT_MM = 84;
 const PRINT_INFO_ROW_HEIGHT_MM = 10.525;
 const PRINT_PHOTO_WIDTH_MM = 120;
 const PRINT_PHOTO_HEIGHT_MM = 80;
+const STANDARD_DOCUMENT_MIN_ZOOM = 0.75;
+const STANDARD_DOCUMENT_MAX_ZOOM = 3;
+const STANDARD_DOCUMENT_ZOOM_STEP = 0.25;
+const STANDARD_DOCUMENT_PAGE_WIDTH = 1488;
+const STANDARD_DOCUMENT_PAGE_HEIGHT = 2103;
+const STANDARD_DOCUMENTS = {
+  kcs: {
+    title: "KCS 14 20 41 : 2025 서중 콘크리트",
+    pages: buildStandardDocumentPages("standards/kcs-14-20-41-2025/pages", 11),
+  },
+  excs: {
+    title: "EXCS 14 20 41 : 2021 서중 콘크리트",
+    pages: buildStandardDocumentPages("standards/excs-14-20-41-2021/pages", 8),
+  },
+};
+const STANDARD_DOCUMENT_SEARCH_INDEX = window.STANDARD_DOCUMENT_SEARCH_INDEX || {};
+
+function buildStandardDocumentPages(folder, pageCount) {
+  return Array.from({ length: pageCount }, (_, index) => {
+    const pageNumber = index + 1;
+    return {
+      pageNumber,
+      src: `${folder}/page-${String(pageNumber).padStart(2, "0")}.webp`,
+      width: STANDARD_DOCUMENT_PAGE_WIDTH,
+      height: STANDARD_DOCUMENT_PAGE_HEIGHT,
+    };
+  });
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
+}
 
 const elements = {
   standardButton: document.getElementById("standardButton"),
   standardPanel: document.getElementById("standardPanel"),
+  standardDocViewer: document.getElementById("standardDocViewer"),
+  standardDocTitle: document.getElementById("standardDocTitle"),
+  standardDocPageLabel: document.getElementById("standardDocPageLabel"),
+  standardDocPrev: document.getElementById("standardDocPrev"),
+  standardDocNext: document.getElementById("standardDocNext"),
+  standardDocZoomOut: document.getElementById("standardDocZoomOut"),
+  standardDocZoomIn: document.getElementById("standardDocZoomIn"),
+  standardDocZoomLabel: document.getElementById("standardDocZoomLabel"),
+  standardDocFit: document.getElementById("standardDocFit"),
+  standardDocClose: document.getElementById("standardDocClose"),
+  standardDocStage: document.getElementById("standardDocStage"),
+  standardDocPages: document.getElementById("standardDocPages"),
+  standardDocSearchInput: document.getElementById("standardDocSearchInput"),
+  standardDocSearchCount: document.getElementById("standardDocSearchCount"),
+  standardDocSearchPrev: document.getElementById("standardDocSearchPrev"),
+  standardDocSearchNext: document.getElementById("standardDocSearchNext"),
   searchButton: document.getElementById("searchButton"),
   printButton: document.getElementById("printButton"),
   newBoardButton: document.getElementById("newBoardButton"),
@@ -93,6 +150,12 @@ let printImageCache = {
   signature: "",
   images: [],
 };
+let isTemperatureAccessVisible = loadTemperatureAccessVisible();
+let activeStandardDocumentKey = "";
+let activeStandardDocumentPage = 1;
+let standardDocumentZoom = 1;
+let standardDocumentSearchMatches = [];
+let standardDocumentScrollFrame = 0;
 
 let state = {
   shareCode: "",
@@ -128,19 +191,18 @@ async function init() {
 
 function bindEvents() {
   elements.standardButton.addEventListener("click", toggleStandardPanel);
+  elements.standardPanel.addEventListener("click", handleStandardPanelClick);
   elements.searchButton.addEventListener("click", toggleBoardSearch);
   elements.boardSearchInput.addEventListener("compositionstart", () => {
     isBoardSearchComposing = true;
   });
   elements.boardSearchInput.addEventListener("compositionend", () => {
     isBoardSearchComposing = false;
-    boardSearchQuery = elements.boardSearchInput.value;
-    scheduleBoardListRender();
+    handleBoardSearchInput();
   });
   elements.boardSearchInput.addEventListener("input", () => {
     if (isBoardSearchComposing) return;
-    boardSearchQuery = elements.boardSearchInput.value;
-    scheduleBoardListRender();
+    handleBoardSearchInput();
   });
   elements.boardSearchInput.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -256,17 +318,326 @@ function bindEvents() {
   elements.photoViewerClose.addEventListener("click", closePhotoViewer);
   elements.photoViewer.addEventListener("pointerdown", closePhotoViewerOnBackdrop);
   elements.photoViewer.addEventListener("click", closePhotoViewerOnBackdrop);
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !elements.photoViewer.hidden) {
-      closePhotoViewer();
-    }
+  elements.standardDocClose.addEventListener("click", closeStandardDocumentViewer);
+  elements.standardDocPrev.addEventListener("click", () => shiftStandardDocumentPage(-1));
+  elements.standardDocNext.addEventListener("click", () => shiftStandardDocumentPage(1));
+  elements.standardDocZoomOut.addEventListener("click", () => adjustStandardDocumentZoom(-STANDARD_DOCUMENT_ZOOM_STEP));
+  elements.standardDocZoomIn.addEventListener("click", () => adjustStandardDocumentZoom(STANDARD_DOCUMENT_ZOOM_STEP));
+  elements.standardDocFit.addEventListener("click", fitStandardDocumentToScreen);
+  elements.standardDocSearchInput.addEventListener("input", handleStandardDocumentSearchInput);
+  elements.standardDocSearchInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    moveToStandardDocumentSearchMatch(event.shiftKey ? -1 : 1);
   });
+  elements.standardDocSearchPrev.addEventListener("click", () => moveToStandardDocumentSearchMatch(-1));
+  elements.standardDocSearchNext.addEventListener("click", () => moveToStandardDocumentSearchMatch(1));
+  elements.standardDocStage.addEventListener("scroll", handleStandardDocumentScroll, { passive: true });
+  document.addEventListener("keydown", handleGlobalKeydown);
 }
 
 function toggleStandardPanel() {
   const willOpen = elements.standardPanel.hidden;
   elements.standardPanel.hidden = !willOpen;
   elements.standardButton.setAttribute("aria-expanded", String(willOpen));
+}
+
+function handleStandardPanelClick(event) {
+  const button = event.target.closest("[data-standard-doc]");
+  if (!button) return;
+  openStandardDocumentViewer(button.dataset.standardDoc);
+}
+
+function handleGlobalKeydown(event) {
+  if (!elements.photoViewer.hidden && event.key === "Escape") {
+    closePhotoViewer();
+    return;
+  }
+
+  if (elements.standardDocViewer.hidden) return;
+
+  if (event.key === "Escape") {
+    closeStandardDocumentViewer();
+    return;
+  }
+
+  if (event.key === "ArrowLeft") {
+    shiftStandardDocumentPage(-1);
+    return;
+  }
+
+  if (event.key === "ArrowRight") {
+    shiftStandardDocumentPage(1);
+    return;
+  }
+
+  if (event.key === "+" || event.key === "=") {
+    adjustStandardDocumentZoom(STANDARD_DOCUMENT_ZOOM_STEP);
+    return;
+  }
+
+  if (event.key === "-") {
+    adjustStandardDocumentZoom(-STANDARD_DOCUMENT_ZOOM_STEP);
+  }
+}
+
+function openStandardDocumentViewer(documentKey) {
+  const documentConfig = STANDARD_DOCUMENTS[documentKey];
+  if (!documentConfig) return;
+
+  activeStandardDocumentKey = documentKey;
+  activeStandardDocumentPage = 1;
+  standardDocumentZoom = 1;
+  resetStandardDocumentSearch();
+  elements.standardDocViewer.hidden = false;
+  document.body.classList.add("viewer-open");
+  renderStandardDocumentPage({ resetScroll: true });
+  elements.standardDocClose.focus({ preventScroll: true });
+}
+
+function closeStandardDocumentViewer() {
+  elements.standardDocViewer.hidden = true;
+  elements.standardDocPages.replaceChildren();
+  elements.standardDocPages.removeAttribute("data-document-key");
+  activeStandardDocumentKey = "";
+  resetStandardDocumentSearch();
+  document.body.classList.remove("viewer-open");
+}
+
+function shiftStandardDocumentPage(direction) {
+  const documentConfig = getActiveStandardDocument();
+  if (!documentConfig) return;
+
+  const nextPage = clamp(activeStandardDocumentPage + direction, 1, documentConfig.pages.length);
+  if (nextPage === activeStandardDocumentPage) return;
+
+  activeStandardDocumentPage = nextPage;
+  renderStandardDocumentPage({ scrollToPage: true });
+}
+
+function adjustStandardDocumentZoom(delta) {
+  const nextZoom = clamp(
+    Math.round((standardDocumentZoom + delta) / STANDARD_DOCUMENT_ZOOM_STEP) * STANDARD_DOCUMENT_ZOOM_STEP,
+    STANDARD_DOCUMENT_MIN_ZOOM,
+    STANDARD_DOCUMENT_MAX_ZOOM,
+  );
+
+  if (nextZoom === standardDocumentZoom) return;
+  standardDocumentZoom = nextZoom;
+  renderStandardDocumentZoom();
+}
+
+function fitStandardDocumentToScreen() {
+  standardDocumentZoom = 1;
+  renderStandardDocumentZoom();
+  scrollStandardDocumentPageIntoView(activeStandardDocumentPage, { behavior: "auto" });
+}
+
+function renderStandardDocumentPage({ resetScroll = false, scrollToPage = false } = {}) {
+  const documentConfig = getActiveStandardDocument();
+  if (!documentConfig) return;
+
+  activeStandardDocumentPage = clamp(activeStandardDocumentPage, 1, documentConfig.pages.length);
+  renderStandardDocumentPages(documentConfig);
+  updateStandardDocumentStatus();
+  renderStandardDocumentZoom();
+  renderStandardDocumentSearchState();
+  preloadStandardDocumentPage(documentConfig.pages[activeStandardDocumentPage]);
+  preloadStandardDocumentPage(documentConfig.pages[activeStandardDocumentPage - 2]);
+
+  if (resetScroll || scrollToPage) {
+    requestAnimationFrame(() => {
+      scrollStandardDocumentPageIntoView(activeStandardDocumentPage, { behavior: "auto" });
+    });
+  }
+}
+
+function renderStandardDocumentPages(documentConfig) {
+  if (elements.standardDocPages.dataset.documentKey === activeStandardDocumentKey) return;
+
+  const fragment = document.createDocumentFragment();
+  documentConfig.pages.forEach((page) => {
+    const figure = document.createElement("figure");
+    figure.className = "standard-doc-page";
+    figure.dataset.standardPage = String(page.pageNumber);
+
+    const image = document.createElement("img");
+    image.className = "standard-doc-page-image";
+    image.src = page.src;
+    image.alt = `${documentConfig.title} ${page.pageNumber}쪽`;
+    image.width = page.width;
+    image.height = page.height;
+    image.loading = page.pageNumber <= 2 ? "eager" : "lazy";
+    image.decoding = "async";
+    image.draggable = false;
+    image.addEventListener("error", () => {
+      showToast("전문 이미지를 불러오지 못했습니다.");
+    });
+
+    figure.appendChild(image);
+    fragment.appendChild(figure);
+  });
+
+  elements.standardDocPages.replaceChildren(fragment);
+  elements.standardDocPages.dataset.documentKey = activeStandardDocumentKey;
+}
+
+function updateStandardDocumentStatus() {
+  const documentConfig = getActiveStandardDocument();
+  if (!documentConfig) return;
+
+  elements.standardDocTitle.textContent = documentConfig.title;
+  elements.standardDocPageLabel.textContent = `${activeStandardDocumentPage} / ${documentConfig.pages.length}쪽`;
+  elements.standardDocPrev.disabled = activeStandardDocumentPage <= 1;
+  elements.standardDocNext.disabled = activeStandardDocumentPage >= documentConfig.pages.length;
+}
+
+function renderStandardDocumentZoom() {
+  elements.standardDocZoomLabel.textContent = `${Math.round(standardDocumentZoom * 100)}%`;
+  elements.standardDocZoomOut.disabled = standardDocumentZoom <= STANDARD_DOCUMENT_MIN_ZOOM;
+  elements.standardDocZoomIn.disabled = standardDocumentZoom >= STANDARD_DOCUMENT_MAX_ZOOM;
+  const imageWidth = standardDocumentZoom === 1 ? "min(100%, 1040px)" : `${Math.round(100 * standardDocumentZoom)}%`;
+  elements.standardDocPages.style.setProperty("--standard-doc-image-width", imageWidth);
+}
+
+function getActiveStandardDocument() {
+  return STANDARD_DOCUMENTS[activeStandardDocumentKey] || null;
+}
+
+function preloadStandardDocumentPage(page) {
+  if (!page) return;
+  const image = new Image();
+  image.src = page.src;
+}
+
+function scrollStandardDocumentPageIntoView(pageNumber, { behavior = "smooth" } = {}) {
+  const pageElement = elements.standardDocPages.querySelector(`[data-standard-page="${pageNumber}"]`);
+  if (!pageElement) return;
+
+  const relativePageTop = pageElement.offsetTop - elements.standardDocPages.offsetTop;
+  elements.standardDocStage.scrollTo({
+    left: 0,
+    top: Math.max(0, relativePageTop - 8),
+    behavior,
+  });
+}
+
+function handleStandardDocumentScroll() {
+  if (elements.standardDocViewer.hidden || standardDocumentScrollFrame) return;
+
+  standardDocumentScrollFrame = requestAnimationFrame(() => {
+    standardDocumentScrollFrame = 0;
+    syncStandardDocumentPageFromScroll();
+  });
+}
+
+function syncStandardDocumentPageFromScroll() {
+  const documentConfig = getActiveStandardDocument();
+  if (!documentConfig) return;
+
+  const stageRect = elements.standardDocStage.getBoundingClientRect();
+  const referenceY = stageRect.top + Math.min(180, elements.standardDocStage.clientHeight * 0.32);
+  const pageElements = Array.from(elements.standardDocPages.querySelectorAll("[data-standard-page]"));
+  let currentPage = activeStandardDocumentPage;
+  let smallestDistance = Number.POSITIVE_INFINITY;
+
+  pageElements.forEach((pageElement) => {
+    const rect = pageElement.getBoundingClientRect();
+    const isVisible = rect.bottom > stageRect.top + 12 && rect.top < stageRect.bottom - 12;
+    if (!isVisible) return;
+
+    const distance = Math.abs(rect.top - referenceY);
+    if (distance < smallestDistance) {
+      smallestDistance = distance;
+      currentPage = Number(pageElement.dataset.standardPage);
+    }
+  });
+
+  if (currentPage === activeStandardDocumentPage) return;
+  activeStandardDocumentPage = clamp(currentPage, 1, documentConfig.pages.length);
+  updateStandardDocumentStatus();
+  renderStandardDocumentSearchState();
+}
+
+function resetStandardDocumentSearch() {
+  standardDocumentSearchMatches = [];
+  if (elements.standardDocSearchInput) {
+    elements.standardDocSearchInput.value = "";
+  }
+  renderStandardDocumentSearchState();
+}
+
+function handleStandardDocumentSearchInput() {
+  const query = elements.standardDocSearchInput.value;
+  standardDocumentSearchMatches = findStandardDocumentSearchMatches(activeStandardDocumentKey, query);
+  renderStandardDocumentSearchState();
+
+  if (standardDocumentSearchMatches.length) {
+    const nextMatch =
+      standardDocumentSearchMatches.find((match) => match.page >= activeStandardDocumentPage) ||
+      standardDocumentSearchMatches[0];
+    activeStandardDocumentPage = nextMatch.page;
+    renderStandardDocumentPage({ resetScroll: true });
+  }
+}
+
+function findStandardDocumentSearchMatches(documentKey, query) {
+  const normalizedQuery = normalizeStandardDocumentSearchText(query);
+  if (!normalizedQuery) return [];
+
+  const pages = STANDARD_DOCUMENT_SEARCH_INDEX[documentKey] || [];
+  return pages
+    .filter((page) => normalizeStandardDocumentSearchText(page.text).includes(normalizedQuery))
+    .map((page) => ({ page: page.page }));
+}
+
+function moveToStandardDocumentSearchMatch(direction) {
+  const query = elements.standardDocSearchInput.value;
+  if (!normalizeStandardDocumentSearchText(query)) return;
+
+  if (!standardDocumentSearchMatches.length) {
+    showToast("검색 결과가 없습니다.");
+    return;
+  }
+
+  const orderedMatches = standardDocumentSearchMatches;
+  const nextMatch =
+    direction > 0
+      ? orderedMatches.find((match) => match.page > activeStandardDocumentPage) || orderedMatches[0]
+      : [...orderedMatches].reverse().find((match) => match.page < activeStandardDocumentPage) ||
+        orderedMatches[orderedMatches.length - 1];
+
+  activeStandardDocumentPage = nextMatch.page;
+  renderStandardDocumentPage({ resetScroll: true });
+}
+
+function renderStandardDocumentSearchState() {
+  if (!elements.standardDocSearchCount) return;
+
+  const query = elements.standardDocSearchInput?.value || "";
+  const hasQuery = Boolean(normalizeStandardDocumentSearchText(query));
+  const currentMatchIndex = standardDocumentSearchMatches.findIndex((match) => match.page === activeStandardDocumentPage);
+
+  if (!hasQuery) {
+    elements.standardDocSearchCount.textContent = "0건";
+  } else if (!standardDocumentSearchMatches.length) {
+    elements.standardDocSearchCount.textContent = "0건";
+  } else if (currentMatchIndex >= 0) {
+    elements.standardDocSearchCount.textContent = `${currentMatchIndex + 1}/${standardDocumentSearchMatches.length}건`;
+  } else {
+    elements.standardDocSearchCount.textContent = `${standardDocumentSearchMatches.length}건`;
+  }
+
+  const disableSearchMove = !hasQuery || !standardDocumentSearchMatches.length;
+  elements.standardDocSearchPrev.disabled = disableSearchMove;
+  elements.standardDocSearchNext.disabled = disableSearchMove;
+}
+
+function normalizeStandardDocumentSearchText(text) {
+  return String(text || "")
+    .normalize("NFKC")
+    .toLocaleLowerCase("ko-KR")
+    .replace(/\s+/g, "");
 }
 
 function canUseCloud() {
@@ -769,6 +1140,7 @@ async function saveEntry(day, photoType = activePhotoType) {
 async function persistEntry(day, photoType = activePhotoType) {
   const entry = getEntry(day);
   const normalizedType = normalizePhotoType(photoType);
+  const slotLabel = getPhotoSlotLabel(day, normalizedType);
 
   if (dbClient && state.boardId) {
     let existing = null;
@@ -776,7 +1148,7 @@ async function persistEntry(day, photoType = activePhotoType) {
       existing = await loadExistingCloudEntry(day);
     } catch (error) {
       console.error(error);
-      showToast(`${day}일차 기존 저장 정보를 확인하지 못했습니다. 잠시 뒤 다시 시도해 주세요.`);
+      showToast(`${slotLabel} 기존 저장 정보를 확인하지 못했습니다. 잠시 뒤 다시 시도해 주세요.`);
       return false;
     }
     const payload = createEntryPersistPayload(day, normalizedType, entry, existing);
@@ -789,7 +1161,7 @@ async function persistEntry(day, photoType = activePhotoType) {
 
     if (error) {
       console.error(error);
-      showToast(`${day}일차 저장에 실패했습니다.`);
+      showToast(`${slotLabel} 저장에 실패했습니다.`);
       return false;
     }
   } else {
@@ -883,6 +1255,7 @@ function saveLocalBoard() {
 async function handlePhotoUpload(photoType, day, file) {
   const normalizedType = normalizePhotoType(photoType);
   const typeConfig = getPhotoTypeConfig(normalizedType);
+  const slotLabel = getPhotoSlotLabel(day, normalizedType);
   if (!state.shareCode || (dbClient && !state.boardId)) {
     showToast("새 대지를 먼저 만들어 주세요.");
     return false;
@@ -895,7 +1268,7 @@ async function handlePhotoUpload(photoType, day, file) {
 
   beginPhotoMutation();
   try {
-    showToast(`${day}일차 ${typeConfig.label} 사진을 압축하는 중입니다.`);
+    showToast(`${slotLabel} ${typeConfig.label} 사진을 압축하는 중입니다.`);
     const image = await preparePhotoEntry(normalizedType, day, file);
     const saved = await saveEntry(day, normalizedType);
     if (!saved) {
@@ -904,7 +1277,7 @@ async function handlePhotoUpload(photoType, day, file) {
       return false;
     }
     cleanupOldPhotoPath(image.oldPath, image.newPath);
-    showToast(`${day}일차 ${typeConfig.label} 사진을 등록했습니다. ${formatBytes(file.size)} → ${formatBytes(image.blob.size)}`);
+    showToast(`${slotLabel} ${typeConfig.label} 사진을 등록했습니다. ${formatBytes(file.size)} → ${formatBytes(image.blob.size)}`);
     return true;
   } catch (error) {
     console.error(error);
@@ -947,9 +1320,10 @@ async function handlePhotoSelection(photoType, startDay, files) {
   let completed = 0;
   let failed = 0;
   let fileIndex = 0;
+  const startLabel = getPhotoSlotLabel(targetDays[0], normalizedType);
   beginPhotoMutation();
   try {
-    showToast(`${targetDays[0]}일차부터 ${typeConfig.label} 사진 ${maxCount}장을 등록하는 중입니다.`);
+    showToast(`${startLabel}부터 ${typeConfig.label} 사진 ${maxCount}장을 등록하는 중입니다.`);
     for (const day of targetDays) {
       if (fileIndex >= imageFiles.length) break;
 
@@ -964,7 +1338,7 @@ async function handlePhotoSelection(photoType, startDay, files) {
           if (!saved) {
             setTypedPhoto(getEntry(day), normalizedType, image.previousPhoto);
             cleanupNewPhotoPath(image.newPath);
-            throw new Error(`${day}일차 저장 실패`);
+            throw new Error(`${getPhotoSlotLabel(day, normalizedType)} 저장 실패`);
           }
           cleanupOldPhotoPath(image.oldPath, image.newPath);
           completed += 1;
@@ -981,10 +1355,10 @@ async function handlePhotoSelection(photoType, startDay, files) {
 
     const overflowCount = Math.max(0, imageFiles.length - targetDays.length - failed);
     const invalidCount = files.length - imageFiles.length;
-    const overflowText = overflowCount > 0 ? ` ${overflowCount}장은 5일차를 넘어 제외했습니다.` : "";
+    const overflowText = getOverflowPhotoText(overflowCount, normalizedType);
     const invalidText = invalidCount > 0 ? ` 이미지가 아닌 파일 ${invalidCount}개는 제외했습니다.` : "";
     const failedText = failed > 0 ? ` 처리 실패 ${failed}장은 건너뛰었습니다.` : "";
-    showToast(`${targetDays[0]}일차부터 ${typeConfig.label} 사진 ${completed}장 등록했습니다.${failedText}${overflowText}${invalidText}`);
+    showToast(`${startLabel}부터 ${typeConfig.label} 사진 ${completed}장 등록했습니다.${failedText}${overflowText}${invalidText}`);
   } catch (error) {
     console.error(error);
     await loadBoardList();
@@ -1057,10 +1431,11 @@ function cleanupNewPhotoPath(newPath) {
 async function deletePhoto(photoType, day) {
   const normalizedType = normalizePhotoType(photoType);
   const typeConfig = getPhotoTypeConfig(normalizedType);
+  const slotLabel = getPhotoSlotLabel(day, normalizedType);
   const entry = getEntry(day);
   const previousPhoto = getTypedPhoto(entry, normalizedType);
   if (!previousPhoto.photoUrl) return;
-  const ok = window.confirm(`${day}일차 ${typeConfig.label} 사진을 삭제할까요?`);
+  const ok = window.confirm(`${slotLabel} ${typeConfig.label} 사진을 삭제할까요?`);
   if (!ok) return;
 
   endFilePickNow();
@@ -1073,7 +1448,7 @@ async function deletePhoto(photoType, day) {
     if (!saved) {
       setTypedPhoto(entry, normalizedType, previousPhoto);
       renderAll();
-      showToast(`${day}일차 ${typeConfig.label} 사진 삭제 저장에 실패했습니다.`);
+      showToast(`${slotLabel} ${typeConfig.label} 사진 삭제 저장에 실패했습니다.`);
       return;
     }
 
@@ -1081,7 +1456,7 @@ async function deletePhoto(photoType, day) {
       dbClient.storage.from(config.bucket).remove([previousPhoto.photoPath]).catch(console.error);
     }
 
-    showToast(`${day}일차 ${typeConfig.label} 사진을 삭제했습니다.`);
+    showToast(`${slotLabel} ${typeConfig.label} 사진을 삭제했습니다.`);
   } finally {
     await endPhotoMutation();
   }
@@ -1134,6 +1509,29 @@ function getPhotoTypeConfig(photoType = activePhotoType) {
   return PHOTO_TYPE_CONFIG[normalizePhotoType(photoType)] || PHOTO_TYPE_CONFIG[DEFAULT_PHOTO_TYPE];
 }
 
+function getPhotoSlotLabel(slot, photoType = activePhotoType) {
+  const config = getPhotoTypeConfig(photoType);
+  return config.slotLabel ? config.slotLabel(slot) : `${slot}일차`;
+}
+
+function getPhotoSlotDateLabel(slot, photoType = activePhotoType) {
+  const config = getPhotoTypeConfig(photoType);
+  return config.slotDateLabel ? config.slotDateLabel(slot) : formatDayDate(slot);
+}
+
+function getPhotoSlotCompactLabel(slot, photoType = activePhotoType) {
+  const config = getPhotoTypeConfig(photoType);
+  return config.slotCompactLabel ? config.slotCompactLabel(slot) : formatCompactDayDate(slot);
+}
+
+function getOverflowPhotoText(count, photoType = activePhotoType) {
+  if (count <= 0) return "";
+  if (normalizePhotoType(photoType) === PHOTO_TYPES.TEMPERATURE) {
+    return ` ${count}장은 등록 가능한 측정 칸을 넘어 제외했습니다.`;
+  }
+  return ` ${count}장은 5일차를 넘어 제외했습니다.`;
+}
+
 function setActivePhotoType(photoType) {
   const nextType = normalizePhotoType(photoType);
   if (activePhotoType === nextType) {
@@ -1157,10 +1555,38 @@ function renderPhotoTypeControls() {
   }
 
   elements.photoTypeTabs?.querySelectorAll("[data-photo-type]").forEach((button) => {
-    const selected = normalizePhotoType(button.dataset.photoType) === activePhotoType;
+    const buttonPhotoType = normalizePhotoType(button.dataset.photoType);
+    const selected = buttonPhotoType === activePhotoType;
+    const isTemperatureButton = buttonPhotoType === PHOTO_TYPES.TEMPERATURE;
     button.setAttribute("aria-selected", String(selected));
     button.classList.toggle("active", selected);
+    button.classList.toggle("temperature-stealth-tab", isTemperatureButton && !isTemperatureAccessVisible);
+    button.classList.toggle("temperature-visible-tab", isTemperatureButton && isTemperatureAccessVisible);
   });
+}
+
+function loadTemperatureAccessVisible() {
+  try {
+    return localStorage.getItem(TEMPERATURE_VISIBILITY_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setTemperatureAccessVisible(visible) {
+  isTemperatureAccessVisible = Boolean(visible);
+  try {
+    localStorage.setItem(TEMPERATURE_VISIBILITY_STORAGE_KEY, isTemperatureAccessVisible ? "1" : "0");
+  } catch {
+    // 개인 표시 설정 저장 실패는 사진 저장과 별개로 조용히 무시합니다.
+  }
+
+  if (!isTemperatureAccessVisible && activePhotoType === PHOTO_TYPES.TEMPERATURE) {
+    setActivePhotoType(PHOTO_TYPES.CURING);
+    return;
+  }
+
+  renderPhotoTypeControls();
 }
 
 function normalizeEntryShape(entry) {
@@ -1451,7 +1877,7 @@ function renderBoardList() {
             <span class="board-count ${curingCount === DAY_COUNT ? "complete" : ""}">${curingCount}/${DAY_COUNT} 양생</span>
             ${
               temperatureCount > 0
-                ? `<span class="board-count temperature ${temperatureCount === DAY_COUNT ? "complete" : ""}">${temperatureCount}/${DAY_COUNT} 온도</span>`
+                ? `<span class="board-count temperature">${temperatureCount}장 측정</span>`
                 : ""
             }
           </span>
@@ -1516,6 +1942,27 @@ function clearBoardSearch() {
   elements.boardSearchInput.focus();
 }
 
+function handleBoardSearchInput() {
+  const value = elements.boardSearchInput.value;
+  if (applyTemperatureAccessCode(value)) return;
+
+  boardSearchQuery = value;
+  scheduleBoardListRender();
+}
+
+function applyTemperatureAccessCode(value) {
+  const code = String(value || "").trim();
+  if (code !== TEMPERATURE_SHOW_CODE && code !== TEMPERATURE_HIDE_CODE) return false;
+
+  const willShow = code === TEMPERATURE_SHOW_CODE;
+  setTemperatureAccessVisible(willShow);
+  boardSearchQuery = "";
+  elements.boardSearchInput.value = "";
+  renderBoardList();
+  showToast(willShow ? "이 기기에서 온도측정 버튼을 표시합니다." : "이 기기에서 온도측정 버튼을 숨깁니다.");
+  return true;
+}
+
 function normalizeSearchText(value) {
   return String(value || "")
     .toLocaleLowerCase("ko-KR")
@@ -1529,11 +1976,12 @@ function renderSummary() {
       const entry = getEntry(day);
       const hasPhoto = hasEntryPhoto(entry, photoType);
       const rainHold = photoType === PHOTO_TYPES.CURING && isRainHoldEntry(entry);
+      const slotLabel = getPhotoSlotLabel(day, photoType);
       const statusText = hasPhoto ? "등록" : rainHold ? "우천대기" : "미등록";
       return `
         <button class="summary-item ${hasPhoto ? "done" : ""} ${rainHold ? "rain-hold" : ""}" type="button" data-summary-day="${day}">
-          <strong>${day}일차</strong>
-          <small>${formatCompactDayDate(day)}</small>
+          <strong>${escapeHtml(slotLabel)}</strong>
+          <small>${escapeHtml(getPhotoSlotCompactLabel(day, photoType))}</small>
           <span class="summary-status">${statusText}</span>
         </button>
       `;
@@ -1562,10 +2010,12 @@ function renderDayGrid() {
       const hasPhoto = Boolean(photo.photoUrl);
       const rainHold = photoType === PHOTO_TYPES.CURING && isRainHoldEntry(entry);
       const emptyPhotoText = getEmptyPhotoText(day, photoType);
+      const slotLabel = getPhotoSlotLabel(day, photoType);
+      const slotDateLabel = getPhotoSlotDateLabel(day, photoType);
       return `
         <article class="day-card ${hasPhoto ? "complete" : ""} ${rainHold ? "rain-hold" : ""}" data-day-card="${day}">
           <div class="day-card-header">
-            <h3>${day}일차</h3>
+            <h3>${escapeHtml(slotLabel)}</h3>
             ${
               photoType === PHOTO_TYPES.CURING
                 ? `<button class="rain-toggle ${rainHold ? "active" : ""}" type="button" data-rain-day="${day}" aria-pressed="${rainHold}" title="${day}일차 우천 대기 표시" aria-label="${day}일차 우천 대기 표시">
@@ -1573,13 +2023,13 @@ function renderDayGrid() {
                   </button>`
                 : ""
             }
-            <span class="date-pill">${formatDayDate(day)}</span>
+            <span class="date-pill">${escapeHtml(slotDateLabel)}</span>
           </div>
           <div class="photo-preview">
             ${
               hasPhoto
-                ? `<button class="photo-preview-button" type="button" data-preview-day="${day}" data-preview-type="${escapeAttribute(photoType)}" title="${day}일차 사진 크게 보기">
-                    <img src="${escapeAttribute(photo.photoUrl)}" alt="${day}일차 ${escapeAttribute(typeConfig.label)} 사진" loading="lazy" decoding="async">
+                ? `<button class="photo-preview-button" type="button" data-preview-day="${day}" data-preview-type="${escapeAttribute(photoType)}" title="${escapeAttribute(slotLabel)} 사진 크게 보기">
+                    <img src="${escapeAttribute(photo.photoUrl)}" alt="${escapeAttribute(slotLabel)} ${escapeAttribute(typeConfig.label)} 사진" loading="lazy" decoding="async">
                   </button>`
                 : `<div class="empty-photo ${rainHold ? "rain-hold" : ""}"><span>${escapeHtml(emptyPhotoText)}</span></div>`
             }
@@ -1588,11 +2038,11 @@ function renderDayGrid() {
             <div class="upload-row">
               <div class="file-control">
                 <label class="file-control-title" for="camera-${day}">▣ 촬영</label>
-                <input id="camera-${day}" class="file-input" data-day="${day}" data-photo-type="${escapeAttribute(photoType)}" type="file" accept="image/*" capture="environment" aria-label="${day}일차 ${escapeAttribute(typeConfig.label)} 사진 촬영">
+                <input id="camera-${day}" class="file-input" data-day="${day}" data-photo-type="${escapeAttribute(photoType)}" type="file" accept="image/*" capture="environment" aria-label="${escapeAttribute(slotLabel)} ${escapeAttribute(typeConfig.label)} 사진 촬영">
               </div>
               <div class="file-control">
                 <label class="file-control-title" for="gallery-${day}">＋ 첨부</label>
-                <input id="gallery-${day}" class="file-input" data-day="${day}" data-photo-type="${escapeAttribute(photoType)}" type="file" accept="image/*" multiple aria-label="${day}일차 ${escapeAttribute(typeConfig.label)} 사진 첨부">
+                <input id="gallery-${day}" class="file-input" data-day="${day}" data-photo-type="${escapeAttribute(photoType)}" type="file" accept="image/*" multiple aria-label="${escapeAttribute(slotLabel)} ${escapeAttribute(typeConfig.label)} 사진 첨부">
               </div>
               ${
                 hasPhoto
@@ -1617,7 +2067,7 @@ function renderPrintArea() {
 
   window.clearTimeout(printPreviewTimer);
 
-  if (printImageCache.signature === signature && printImageCache.images.length) {
+  if (printImageCache.signature === signature && Array.isArray(printImageCache.images)) {
     renderPrintPreviewImages(printImageCache.images);
     return;
   }
@@ -1637,6 +2087,11 @@ function renderPrintArea() {
 }
 
 function renderPrintPreviewImages(images) {
+  if (!images.length) {
+    elements.printArea.innerHTML = `<div class="print-render-loading">${escapeHtml(getPhotoTypeConfig(activePhotoType).sectionTitle)} 미등록</div>`;
+    return;
+  }
+
   elements.printArea.innerHTML = images
     .map((src, index) => {
       return `<img class="print-raster-page" src="${escapeAttribute(src)}" alt="사진대지 ${index + 1}쪽">`;
@@ -1663,7 +2118,7 @@ function openPhotoViewer(day, photoType = activePhotoType) {
   if (!photo.photoUrl) return;
 
   elements.photoViewerImage.src = photo.photoUrl;
-  elements.photoViewerImage.alt = `${day}일차 ${typeConfig.label} 사진`;
+  elements.photoViewerImage.alt = `${getPhotoSlotLabel(day, normalizedType)} ${typeConfig.label} 사진`;
   elements.photoViewer.hidden = false;
   document.body.classList.add("viewer-open");
 }
@@ -1683,6 +2138,7 @@ function closePhotoViewer() {
 
 function getPrintImageSignature() {
   const photoType = activePhotoType;
+  const printSlots = getPrintSlots(photoType);
   const entries = days().map((day) => {
     const entry = getEntry(day);
     const photo = getTypedPhoto(entry, photoType);
@@ -1694,27 +2150,49 @@ function getPrintImageSignature() {
     projectName: state.projectName || "",
     pourPart: state.pourPart || "",
     pourDate: state.pourDate || "",
+    printSlots,
     entries,
   });
 }
 
+function getPrintSlots(photoType = activePhotoType) {
+  const normalizedType = normalizePhotoType(photoType);
+  if (normalizedType === PHOTO_TYPES.CURING) return days();
+
+  return days().filter((day) => hasEntryPhoto(getEntry(day), normalizedType));
+}
+
+function getPrintPageGroups(photoType = activePhotoType) {
+  const normalizedType = normalizePhotoType(photoType);
+  if (normalizedType === PHOTO_TYPES.CURING) return PRINT_PAGE_GROUPS;
+
+  const slots = getPrintSlots(normalizedType);
+  const groups = [];
+  for (let index = 0; index < slots.length; index += 2) {
+    groups.push([slots[index], slots[index + 1] || null]);
+  }
+  return groups;
+}
+
 async function getPrintPageImages() {
   const signature = getPrintImageSignature();
-  if (printImageCache.signature === signature && printImageCache.images.length) {
+  if (printImageCache.signature === signature && Array.isArray(printImageCache.images)) {
     return printImageCache.images;
   }
 
   const photoType = activePhotoType;
+  const groups = getPrintPageGroups(photoType);
   const photos = await loadPrintPhotos(photoType);
-  const images = PRINT_PAGE_GROUPS.map((group) => createPrintPageImage(group, photos, photoType));
+  const images = groups.map((group) => createPrintPageImage(group, photos, photoType));
   printImageCache = { signature, images };
   return images;
 }
 
 async function loadPrintPhotos(photoType = activePhotoType) {
   const normalizedType = normalizePhotoType(photoType);
+  const slots = getPrintSlots(normalizedType);
   const photoPairs = await Promise.all(
-    days().map(async (day) => {
+    slots.map(async (day) => {
       const photoUrl = getTypedPhoto(getEntry(day), normalizedType).photoUrl;
       if (!photoUrl) return [day, null];
       const image = await loadPrintPhoto(photoUrl);
@@ -1851,7 +2329,7 @@ function drawPrintBlockCanvas(ctx, day, x, y, photos, allowPhotos, photoType = a
   drawPrintMainTextCanvas(ctx, state.pourPart || "", x + labelW, infoY, mainW, infoH, {
     breakAfterFirstBracket: true,
   });
-  drawCenteredPrintText(ctx, `${day}일차`, x + labelW + mainW, infoY, dayW, infoH, 13, "Batang, serif");
+  drawCenteredPrintText(ctx, getPhotoSlotLabel(day, photoType), x + labelW + mainW, infoY, dayW, infoH, 13, "Batang, serif");
   drawCenteredPrintText(ctx, "내  용", x, contentY, labelW, contentH, 13, "Batang, serif");
   drawPrintMainTextCanvas(ctx, getPhotoTypeConfig(photoType).contentText, x + labelW, contentY, mainW + dayW, contentH);
 }
@@ -2038,6 +2516,11 @@ async function handlePrint() {
   showToast("출력 이미지를 준비하는 중입니다.");
   try {
     const images = await getPrintPageImages();
+    if (!images.length) {
+      printWindow.close();
+      showToast(`${getPhotoTypeConfig(activePhotoType).sectionTitle}이 없습니다.`);
+      return;
+    }
     writeRasterPrintDocument(printWindow, images);
   } catch (error) {
     console.error(error);

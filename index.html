@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ko">
   <head>
     <meta charset="utf-8">
@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light">
     <meta name="darkreader-lock">
     <title>서중 콘크리트 습윤양생 사진대지</title>
-    <link rel="stylesheet" href="./styles.css?v=20260702-8">
+    <link rel="stylesheet" href="./styles.css?v=20260703-4">
     <script src="./config.js"></script>
   </head>
   <body>
@@ -45,6 +45,12 @@
               <li>운반시간: 비비기부터 <strong>타설 완료까지 1.5시간</strong> 이내</li>
               <li>타설 전 지반·거푸집은 수분 흡수 우려 부위를 <strong>습윤 상태</strong>로 유지</li>
             </ul>
+            <div class="standard-actions">
+              <button class="small-button standard-open-button" type="button" data-standard-doc="kcs" title="KCS 전문 보기">
+                <span class="button-icon" aria-hidden="true">▣</span>
+                <span>전문 보기</span>
+              </button>
+            </div>
           </div>
           <div class="standard-block">
             <h2><a href="https://www.kcsc.re.kr/standardCode/viewer/EXCS%2014%2020%2041:2021-10-19" target="_blank" rel="noreferrer">EXCS 14 20 41 : 2021 서중 콘크리트</a></h2>
@@ -54,6 +60,12 @@
               <li>탈형 후에도 양생기간 동안 노출면을 <strong>습윤 상태</strong>로 유지</li>
               <li><strong>경화 전 균열 제거</strong>: 갑작스러운 건조 균열은 즉시 재진동 또는 탬핑으로 제거</li>
             </ul>
+            <div class="standard-actions">
+              <button class="small-button standard-open-button" type="button" data-standard-doc="excs" title="EXCS 전문 보기">
+                <span class="button-icon" aria-hidden="true">▣</span>
+                <span>전문 보기</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -159,8 +171,39 @@
       <img id="photoViewerImage" alt="">
     </div>
 
+    <div id="standardDocViewer" class="standard-doc-viewer" role="dialog" aria-modal="true" aria-labelledby="standardDocTitle" hidden>
+      <div class="standard-doc-toolbar">
+        <div class="standard-doc-title">
+          <strong id="standardDocTitle"></strong>
+          <span id="standardDocPageLabel"></span>
+        </div>
+        <div class="standard-doc-search">
+          <label class="standard-doc-search-field" aria-label="전문 검색">
+            <span class="button-icon" aria-hidden="true">⌕</span>
+            <input id="standardDocSearchInput" type="search" placeholder="전문 검색" autocomplete="off">
+          </label>
+          <span id="standardDocSearchCount" class="standard-doc-search-count">0건</span>
+          <button id="standardDocSearchPrev" class="standard-doc-tool" type="button" title="이전 검색 결과" aria-label="이전 검색 결과">↑</button>
+          <button id="standardDocSearchNext" class="standard-doc-tool" type="button" title="다음 검색 결과" aria-label="다음 검색 결과">↓</button>
+        </div>
+        <div class="standard-doc-controls">
+          <button id="standardDocPrev" class="standard-doc-tool" type="button" title="이전 쪽" aria-label="이전 쪽">‹</button>
+          <button id="standardDocNext" class="standard-doc-tool" type="button" title="다음 쪽" aria-label="다음 쪽">›</button>
+          <button id="standardDocZoomOut" class="standard-doc-tool" type="button" title="축소" aria-label="축소">−</button>
+          <span id="standardDocZoomLabel" class="standard-doc-zoom-label">100%</span>
+          <button id="standardDocZoomIn" class="standard-doc-tool" type="button" title="확대" aria-label="확대">＋</button>
+          <button id="standardDocFit" class="standard-doc-tool" type="button" title="화면 맞춤" aria-label="화면 맞춤">↔</button>
+          <button id="standardDocClose" class="standard-doc-close" type="button" title="닫기" aria-label="닫기">×</button>
+        </div>
+      </div>
+      <div id="standardDocStage" class="standard-doc-stage">
+        <div id="standardDocPages" class="standard-doc-pages"></div>
+      </div>
+    </div>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-    <script src="./app.js?v=20260702-8"></script>
+    <script src="./standards/search-index.js?v=20260703-1"></script>
+    <script src="./app.js?v=20260703-4"></script>
   </body>
 </html>
