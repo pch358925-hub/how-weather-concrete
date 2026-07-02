@@ -1448,8 +1448,12 @@ function renderBoardList() {
           <span class="board-date">${escapeHtml(formatListDate(board.pourDate))}</span>
           <span class="board-part">${escapeHtml(board.pourPart)}</span>
           <span class="board-counts">
-            <span class="board-count ${curingCount === DAY_COUNT ? "complete" : ""}">양생 ${curingCount}/${DAY_COUNT}</span>
-            <span class="board-count temperature ${temperatureCount === DAY_COUNT ? "complete" : ""}">온도 ${temperatureCount}/${DAY_COUNT}</span>
+            <span class="board-count ${curingCount === DAY_COUNT ? "complete" : ""}">${curingCount}/${DAY_COUNT} 양생</span>
+            ${
+              temperatureCount > 0
+                ? `<span class="board-count temperature ${temperatureCount === DAY_COUNT ? "complete" : ""}">${temperatureCount}/${DAY_COUNT} 온도</span>`
+                : ""
+            }
           </span>
           <button class="board-delete-button" type="button" data-delete-board-code="${escapeAttribute(board.shareCode)}" title="사진대지 삭제">×</button>
         </div>
