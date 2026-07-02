@@ -91,19 +91,14 @@ const elements = {
   standardDocViewer: document.getElementById("standardDocViewer"),
   standardDocTitle: document.getElementById("standardDocTitle"),
   standardDocPageLabel: document.getElementById("standardDocPageLabel"),
-  standardDocPrev: document.getElementById("standardDocPrev"),
-  standardDocNext: document.getElementById("standardDocNext"),
   standardDocZoomOut: document.getElementById("standardDocZoomOut"),
   standardDocZoomIn: document.getElementById("standardDocZoomIn"),
   standardDocZoomLabel: document.getElementById("standardDocZoomLabel"),
-  standardDocFit: document.getElementById("standardDocFit"),
   standardDocClose: document.getElementById("standardDocClose"),
   standardDocStage: document.getElementById("standardDocStage"),
   standardDocPages: document.getElementById("standardDocPages"),
   standardDocSearchInput: document.getElementById("standardDocSearchInput"),
   standardDocSearchCount: document.getElementById("standardDocSearchCount"),
-  standardDocSearchPrev: document.getElementById("standardDocSearchPrev"),
-  standardDocSearchNext: document.getElementById("standardDocSearchNext"),
   searchButton: document.getElementById("searchButton"),
   printButton: document.getElementById("printButton"),
   newBoardButton: document.getElementById("newBoardButton"),
@@ -319,19 +314,14 @@ function bindEvents() {
   elements.photoViewer.addEventListener("pointerdown", closePhotoViewerOnBackdrop);
   elements.photoViewer.addEventListener("click", closePhotoViewerOnBackdrop);
   elements.standardDocClose.addEventListener("click", closeStandardDocumentViewer);
-  elements.standardDocPrev.addEventListener("click", () => shiftStandardDocumentPage(-1));
-  elements.standardDocNext.addEventListener("click", () => shiftStandardDocumentPage(1));
   elements.standardDocZoomOut.addEventListener("click", () => adjustStandardDocumentZoom(-STANDARD_DOCUMENT_ZOOM_STEP));
   elements.standardDocZoomIn.addEventListener("click", () => adjustStandardDocumentZoom(STANDARD_DOCUMENT_ZOOM_STEP));
-  elements.standardDocFit.addEventListener("click", fitStandardDocumentToScreen);
   elements.standardDocSearchInput.addEventListener("input", handleStandardDocumentSearchInput);
   elements.standardDocSearchInput.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
     event.preventDefault();
     moveToStandardDocumentSearchMatch(event.shiftKey ? -1 : 1);
   });
-  elements.standardDocSearchPrev.addEventListener("click", () => moveToStandardDocumentSearchMatch(-1));
-  elements.standardDocSearchNext.addEventListener("click", () => moveToStandardDocumentSearchMatch(1));
   elements.standardDocStage.addEventListener("scroll", handleStandardDocumentScroll, { passive: true });
   document.addEventListener("keydown", handleGlobalKeydown);
 }
@@ -358,16 +348,6 @@ function handleGlobalKeydown(event) {
 
   if (event.key === "Escape") {
     closeStandardDocumentViewer();
-    return;
-  }
-
-  if (event.key === "ArrowLeft") {
-    shiftStandardDocumentPage(-1);
-    return;
-  }
-
-  if (event.key === "ArrowRight") {
-    shiftStandardDocumentPage(1);
     return;
   }
 
@@ -404,17 +384,6 @@ function closeStandardDocumentViewer() {
   document.body.classList.remove("viewer-open");
 }
 
-function shiftStandardDocumentPage(direction) {
-  const documentConfig = getActiveStandardDocument();
-  if (!documentConfig) return;
-
-  const nextPage = clamp(activeStandardDocumentPage + direction, 1, documentConfig.pages.length);
-  if (nextPage === activeStandardDocumentPage) return;
-
-  activeStandardDocumentPage = nextPage;
-  renderStandardDocumentPage({ scrollToPage: true });
-}
-
 function adjustStandardDocumentZoom(delta) {
   const nextZoom = clamp(
     Math.round((standardDocumentZoom + delta) / STANDARD_DOCUMENT_ZOOM_STEP) * STANDARD_DOCUMENT_ZOOM_STEP,
@@ -425,12 +394,6 @@ function adjustStandardDocumentZoom(delta) {
   if (nextZoom === standardDocumentZoom) return;
   standardDocumentZoom = nextZoom;
   renderStandardDocumentZoom();
-}
-
-function fitStandardDocumentToScreen() {
-  standardDocumentZoom = 1;
-  renderStandardDocumentZoom();
-  scrollStandardDocumentPageIntoView(activeStandardDocumentPage, { behavior: "auto" });
 }
 
 function renderStandardDocumentPage({ resetScroll = false, scrollToPage = false } = {}) {
@@ -475,11 +438,15 @@ function renderStandardDocumentPages(documentConfig) {
     });
 
     figure.appendChild(image);
+    const highlightLayer = document.createElement("div");
+    highlightLayer.className = "standard-doc-highlight-layer";
+    figure.appendChild(highlightLayer);
     fragment.appendChild(figure);
   });
 
   elements.standardDocPages.replaceChildren(fragment);
   elements.standardDocPages.dataset.documentKey = activeStandardDocumentKey;
+  renderStandardDocumentSearchHighlights();
 }
 
 function updateStandardDocumentStatus() {
@@ -488,8 +455,6 @@ function updateStandardDocumentStatus() {
 
   elements.standardDocTitle.textContent = documentConfig.title;
   elements.standardDocPageLabel.textContent = `${activeStandardDocumentPage} / ${documentConfig.pages.length}쪽`;
-  elements.standardDocPrev.disabled = activeStandardDocumentPage <= 1;
-  elements.standardDocNext.disabled = activeStandardDocumentPage >= documentConfig.pages.length;
 }
 
 function renderStandardDocumentZoom() {
@@ -564,12 +529,14 @@ function resetStandardDocumentSearch() {
   if (elements.standardDocSearchInput) {
     elements.standardDocSearchInput.value = "";
   }
+  renderStandardDocumentSearchHighlights();
   renderStandardDocumentSearchState();
 }
 
 function handleStandardDocumentSearchInput() {
   const query = elements.standardDocSearchInput.value;
   standardDocumentSearchMatches = findStandardDocumentSearchMatches(activeStandardDocumentKey, query);
+  renderStandardDocumentSearchHighlights();
   renderStandardDocumentSearchState();
 
   if (standardDocumentSearchMatches.length) {
@@ -577,7 +544,9 @@ function handleStandardDocumentSearchInput() {
       standardDocumentSearchMatches.find((match) => match.page >= activeStandardDocumentPage) ||
       standardDocumentSearchMatches[0];
     activeStandardDocumentPage = nextMatch.page;
-    renderStandardDocumentPage({ resetScroll: true });
+    updateStandardDocumentStatus();
+    renderStandardDocumentSearchState();
+    scrollStandardDocumentPageIntoView(activeStandardDocumentPage, { behavior: "auto" });
   }
 }
 
@@ -587,8 +556,93 @@ function findStandardDocumentSearchMatches(documentKey, query) {
 
   const pages = STANDARD_DOCUMENT_SEARCH_INDEX[documentKey] || [];
   return pages
-    .filter((page) => normalizeStandardDocumentSearchText(page.text).includes(normalizedQuery))
-    .map((page) => ({ page: page.page }));
+    .map((page) => ({
+      page: page.page,
+      boxes: findStandardDocumentSearchBoxes(page, normalizedQuery),
+    }))
+    .filter((match) => match.boxes.length);
+}
+
+function findStandardDocumentSearchBoxes(page, normalizedQuery) {
+  const items = page.items || [];
+  const normalizedText = [];
+  const charMap = [];
+
+  items.forEach((item, itemIndex) => {
+    const itemChars = Array.from(String(item.text || "").normalize("NFKC").toLocaleLowerCase("ko-KR"))
+      .filter((char) => !/\s/.test(char));
+
+    itemChars.forEach((char, offset) => {
+      normalizedText.push(char);
+      charMap.push({
+        itemIndex,
+        offset,
+        length: itemChars.length,
+      });
+    });
+  });
+
+  const haystack = normalizedText.join("");
+  const boxes = [];
+  let matchIndex = haystack.indexOf(normalizedQuery);
+
+  while (matchIndex >= 0) {
+    const touchedItems = new Map();
+    const matchEnd = matchIndex + normalizedQuery.length;
+
+    for (let index = matchIndex; index < matchEnd; index += 1) {
+      const mapped = charMap[index];
+      if (!mapped) continue;
+      const itemRange = touchedItems.get(mapped.itemIndex) || {
+        first: mapped.offset,
+        last: mapped.offset,
+        length: mapped.length,
+      };
+      itemRange.first = Math.min(itemRange.first, mapped.offset);
+      itemRange.last = Math.max(itemRange.last, mapped.offset);
+      touchedItems.set(mapped.itemIndex, itemRange);
+    }
+
+    touchedItems.forEach((range, itemIndex) => {
+      const item = items[itemIndex];
+      if (!item || !range.length) return;
+      const characterWidth = item.w / range.length;
+      boxes.push({
+        x: item.x + characterWidth * range.first,
+        y: item.y,
+        w: Math.max(characterWidth * (range.last - range.first + 1), 0.3),
+        h: item.h,
+      });
+    });
+
+    matchIndex = haystack.indexOf(normalizedQuery, matchIndex + normalizedQuery.length);
+  }
+
+  return boxes;
+}
+
+function renderStandardDocumentSearchHighlights() {
+  elements.standardDocPages.querySelectorAll(".standard-doc-highlight-layer").forEach((layer) => {
+    layer.replaceChildren();
+  });
+
+  standardDocumentSearchMatches.forEach((match) => {
+    const pageElement = elements.standardDocPages.querySelector(`[data-standard-page="${match.page}"]`);
+    const layer = pageElement?.querySelector(".standard-doc-highlight-layer");
+    if (!layer) return;
+
+    const fragment = document.createDocumentFragment();
+    match.boxes.forEach((box) => {
+      const highlight = document.createElement("span");
+      highlight.className = "standard-doc-search-highlight";
+      highlight.style.left = `${box.x}%`;
+      highlight.style.top = `${box.y}%`;
+      highlight.style.width = `${box.w}%`;
+      highlight.style.height = `${box.h}%`;
+      fragment.appendChild(highlight);
+    });
+    layer.appendChild(fragment);
+  });
 }
 
 function moveToStandardDocumentSearchMatch(direction) {
@@ -608,7 +662,9 @@ function moveToStandardDocumentSearchMatch(direction) {
         orderedMatches[orderedMatches.length - 1];
 
   activeStandardDocumentPage = nextMatch.page;
-  renderStandardDocumentPage({ resetScroll: true });
+  updateStandardDocumentStatus();
+  renderStandardDocumentSearchState();
+  scrollStandardDocumentPageIntoView(activeStandardDocumentPage, { behavior: "auto" });
 }
 
 function renderStandardDocumentSearchState() {
@@ -628,9 +684,6 @@ function renderStandardDocumentSearchState() {
     elements.standardDocSearchCount.textContent = `${standardDocumentSearchMatches.length}건`;
   }
 
-  const disableSearchMove = !hasQuery || !standardDocumentSearchMatches.length;
-  elements.standardDocSearchPrev.disabled = disableSearchMove;
-  elements.standardDocSearchNext.disabled = disableSearchMove;
 }
 
 function normalizeStandardDocumentSearchText(text) {

@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="light">
     <meta name="darkreader-lock">
     <title>서중 콘크리트 습윤양생 사진대지</title>
-    <link rel="stylesheet" href="./styles.css?v=20260703-4">
+    <link rel="stylesheet" href="./styles.css?v=20260703-5">
     <script src="./config.js"></script>
   </head>
   <body>
@@ -177,23 +177,20 @@
           <strong id="standardDocTitle"></strong>
           <span id="standardDocPageLabel"></span>
         </div>
-        <div class="standard-doc-search">
-          <label class="standard-doc-search-field" aria-label="전문 검색">
-            <span class="button-icon" aria-hidden="true">⌕</span>
-            <input id="standardDocSearchInput" type="search" placeholder="전문 검색" autocomplete="off">
-          </label>
-          <span id="standardDocSearchCount" class="standard-doc-search-count">0건</span>
-          <button id="standardDocSearchPrev" class="standard-doc-tool" type="button" title="이전 검색 결과" aria-label="이전 검색 결과">↑</button>
-          <button id="standardDocSearchNext" class="standard-doc-tool" type="button" title="다음 검색 결과" aria-label="다음 검색 결과">↓</button>
-        </div>
-        <div class="standard-doc-controls">
-          <button id="standardDocPrev" class="standard-doc-tool" type="button" title="이전 쪽" aria-label="이전 쪽">‹</button>
-          <button id="standardDocNext" class="standard-doc-tool" type="button" title="다음 쪽" aria-label="다음 쪽">›</button>
-          <button id="standardDocZoomOut" class="standard-doc-tool" type="button" title="축소" aria-label="축소">−</button>
-          <span id="standardDocZoomLabel" class="standard-doc-zoom-label">100%</span>
-          <button id="standardDocZoomIn" class="standard-doc-tool" type="button" title="확대" aria-label="확대">＋</button>
-          <button id="standardDocFit" class="standard-doc-tool" type="button" title="화면 맞춤" aria-label="화면 맞춤">↔</button>
-          <button id="standardDocClose" class="standard-doc-close" type="button" title="닫기" aria-label="닫기">×</button>
+        <div class="standard-doc-actions">
+          <div class="standard-doc-search">
+            <label class="standard-doc-search-field" aria-label="전문 검색">
+              <span class="button-icon" aria-hidden="true">⌕</span>
+              <input id="standardDocSearchInput" type="search" placeholder="전문 검색" autocomplete="off">
+            </label>
+            <span id="standardDocSearchCount" class="standard-doc-search-count">0건</span>
+          </div>
+          <div class="standard-doc-controls">
+            <button id="standardDocZoomOut" class="standard-doc-tool" type="button" title="축소" aria-label="축소">−</button>
+            <span id="standardDocZoomLabel" class="standard-doc-zoom-label">100%</span>
+            <button id="standardDocZoomIn" class="standard-doc-tool" type="button" title="확대" aria-label="확대">＋</button>
+            <button id="standardDocClose" class="standard-doc-close" type="button" title="닫기" aria-label="닫기">×</button>
+          </div>
         </div>
       </div>
       <div id="standardDocStage" class="standard-doc-stage">
@@ -203,7 +200,7 @@
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-    <script src="./standards/search-index.js?v=20260703-1"></script>
-    <script src="./app.js?v=20260703-4"></script>
+    <script src="./standards/search-index.js?v=20260703-2"></script>
+    <script src="./app.js?v=20260703-5"></script>
   </body>
 </html>
