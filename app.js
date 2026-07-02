@@ -1339,12 +1339,12 @@ function renderPrintBlock(day) {
     </tr>
     <tr class="print-info-row">
       <td class="print-label">위&nbsp;&nbsp;치</td>
-      <td class="print-main">${escapeHtml(locationText)}</td>
+      <td class="print-main">&nbsp;${escapeHtml(locationText)}</td>
       <td class="print-day">${day}일차</td>
     </tr>
     <tr class="print-content-row">
       <td class="print-label">내&nbsp;&nbsp;용</td>
-      <td colspan="2" class="print-main">${escapeHtml(contentText)}</td>
+      <td colspan="2" class="print-main">&nbsp;${escapeHtml(contentText)}</td>
     </tr>
   `;
 }
