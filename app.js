@@ -3,7 +3,10 @@ const DEFAULT_PROJECT_NAME = "세종천안 2공구 (주)한화";
 const DEFAULT_DAY_SLOT_COUNT = 5;
 const TWO_DAY_SLOT_COUNT = 2;
 const MAX_DAY_SLOT_COUNT = 12;
+const DEFAULT_TEMPERATURE_SLOT_COUNT = 2;
+const MAX_TEMPERATURE_SLOT_COUNT = 12;
 const DAY_SLOT_LIST_STORAGE_KEY = "concrete-photo-board-ui:day-slots";
+const TEMPERATURE_SLOT_LIST_STORAGE_KEY = "concrete-photo-board-ui:temperature-slots";
 const DAY_SLOT_EXTRA_HIDDEN_STORAGE_KEY = "concrete-photo-board-ui:day-slot-extra-hidden";
 const PRINT_DAY_LABEL_BLIND_STORAGE_KEY = "concrete-photo-board-ui:print-day-label-blind";
 const DAY_SLOT_LABELS_STORAGE_KEY = "concrete-photo-board-ui:day-slot-labels";
@@ -354,7 +357,7 @@ function bindEvents() {
 
     const addSlotButton = event.target.closest("[data-add-slot]");
     if (addSlotButton) {
-      addDaySlot();
+      addPhotoSlot(addSlotButton.dataset.addSlot || activePhotoType);
       return;
     }
 
@@ -366,7 +369,7 @@ function bindEvents() {
 
     const removeButton = event.target.closest("[data-remove-day]");
     if (removeButton) {
-      await removeDaySlot(Number(removeButton.dataset.removeDay));
+      await removePhotoSlot(removeButton.dataset.removeType || PHOTO_TYPES.CURING, Number(removeButton.dataset.removeDay));
       return;
     }
 
@@ -1025,6 +1028,8 @@ function applyCloudEntries(entries) {
       photoUrl: row.photo_url || "",
       photoPath: row.photo_path || "",
       uploadedAt: row.uploaded_at || "",
+      capturedAt: memo.photos?.[PHOTO_TYPES.CURING]?.capturedAt || "",
+      capturedAtSource: memo.photos?.[PHOTO_TYPES.CURING]?.capturedAtSource || "",
       rainHold: memo.rainHold,
       photos: memo.photos || {},
     };
@@ -1469,6 +1474,8 @@ function createEntryPersistPayload(day, photoType, entry, existing) {
     photoUrl: existing?.photo_url || "",
     photoPath: existing?.photo_path || "",
     uploadedAt: existing?.uploaded_at || "",
+    capturedAt: existingMemo.photos?.[PHOTO_TYPES.CURING]?.capturedAt || "",
+    capturedAtSource: existingMemo.photos?.[PHOTO_TYPES.CURING]?.capturedAtSource || "",
     rainHold: existingMemo.rainHold,
     photos: existingMemo.photos || {},
   });
@@ -1486,6 +1493,8 @@ function createEntryPersistPayload(day, photoType, entry, existing) {
     merged.photoUrl = existingEntry.photoUrl || entry.photoUrl || "";
     merged.photoPath = existingEntry.photoPath || entry.photoPath || "";
     merged.uploadedAt = existingEntry.uploadedAt || entry.uploadedAt || "";
+    merged.capturedAt = existingEntry.capturedAt || entry.capturedAt || "";
+    merged.capturedAtSource = existingEntry.capturedAtSource || entry.capturedAtSource || "";
     merged.rainHold = existingEntry.rainHold || entry.rainHold || false;
   }
 
@@ -1582,7 +1591,7 @@ async function handlePhotoSelection(photoType, startDay, files) {
     return;
   }
 
-  const targetDays = days().filter((day) => day >= startDay);
+  const targetDays = days(normalizedType).filter((day) => day >= startDay);
   if (!targetDays.length) return;
 
   const maxCount = Math.min(targetDays.length, imageFiles.length);
@@ -1649,16 +1658,20 @@ async function handlePhotoSelection(photoType, startDay, files) {
 
 async function preparePhotoEntry(photoType, day, file) {
   const normalizedType = normalizePhotoType(photoType);
+  const photoTime = await readPhotoTimeInfo(file);
   const uploadFile = await prepareImageFile(file);
   const image = await resizeImage(uploadFile);
   const entry = getEntry(day);
   const previousPhoto = getTypedPhoto(entry, normalizedType);
   const oldPath = previousPhoto.photoPath;
+  const uploadedAt = new Date().toISOString();
   let newPath = "";
   const nextPhoto = {
     photoUrl: image.dataUrl,
     photoPath: "",
-    uploadedAt: new Date().toISOString(),
+    uploadedAt,
+    capturedAt: photoTime.capturedAt || uploadedAt,
+    capturedAtSource: photoTime.capturedAtSource || "uploaded",
     sizeBytes: image.blob.size,
   };
   setTypedPhoto(entry, normalizedType, nextPhoto);
@@ -1930,6 +1943,34 @@ function saveDaySlotList(list) {
   return finalList;
 }
 
+function getStoredTemperatureSlotList() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(TEMPERATURE_SLOT_LIST_STORAGE_KEY) || "null");
+    if (Array.isArray(raw)) {
+      const cleaned = Array.from(
+        new Set(raw.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 1))
+      ).sort((a, b) => a - b);
+      if (cleaned.length) return cleaned;
+    }
+  } catch {
+    // 무시하고 기본값 사용
+  }
+  return Array.from({ length: DEFAULT_TEMPERATURE_SLOT_COUNT }, (_, index) => index + 1);
+}
+
+function saveTemperatureSlotList(list) {
+  const cleaned = Array.from(
+    new Set((list || []).map((value) => Number(value)).filter((value) => Number.isInteger(value) && value >= 1))
+  ).sort((a, b) => a - b);
+  const finalList = cleaned.length ? cleaned : [1];
+  try {
+    localStorage.setItem(TEMPERATURE_SLOT_LIST_STORAGE_KEY, JSON.stringify(finalList));
+  } catch {
+    // 무시
+  }
+  return finalList;
+}
+
 function loadExtraDaySlotHiddenMode() {
   try {
     return localStorage.getItem(DAY_SLOT_EXTRA_HIDDEN_STORAGE_KEY) === "1";
@@ -2019,9 +2060,12 @@ function getEntryDayNo(entry, fallback) {
 function hasDaySlotData(entry) {
   return (
     hasEntryPhoto(entry, PHOTO_TYPES.CURING) ||
-    hasEntryPhoto(entry, PHOTO_TYPES.TEMPERATURE) ||
     isRainHoldEntry(entry)
   );
+}
+
+function hasTemperatureSlotData(entry) {
+  return hasEntryPhoto(entry, PHOTO_TYPES.TEMPERATURE);
 }
 
 // 실제 표시 일차 = 설정된 슬롯 ∪ 이미 사진/데이터가 있는 일차(블라인드가 꺼져 있을 때만 하위 호환 표시).
@@ -2034,6 +2078,22 @@ function getDaySlotList(entries = state.entries) {
     });
   }
   return Array.from(set).sort((a, b) => a - b);
+}
+
+function getTemperatureSlotList(entries = state.entries) {
+  const set = new Set(getStoredTemperatureSlotList());
+  getEntryItems(entries).forEach(({ entry, dayNo }) => {
+    if (!dayNo || !entry || !hasTemperatureSlotData(entry)) return;
+    set.add(dayNo);
+  });
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+function getPhotoSlotList(photoType = activePhotoType, entries = state.entries) {
+  const normalizedType = normalizePhotoType(photoType);
+  return normalizedType === PHOTO_TYPES.TEMPERATURE
+    ? getTemperatureSlotList(entries)
+    : getDaySlotList(entries);
 }
 
 function getDaySlotCount(entries = state.entries) {
@@ -2054,6 +2114,28 @@ function addDaySlot() {
   showToast(`${getPhotoSlotLabel(nextDay, PHOTO_TYPES.CURING)}을(를) 추가했습니다.`);
 }
 
+function addTemperatureSlot() {
+  const list = getStoredTemperatureSlotList();
+  const displayed = getTemperatureSlotList();
+  if (displayed.length >= MAX_TEMPERATURE_SLOT_COUNT) {
+    showToast(`측정 칸은 최대 ${MAX_TEMPERATURE_SLOT_COUNT}개까지 추가할 수 있습니다.`);
+    return;
+  }
+  const nextSlot = (displayed[displayed.length - 1] || 0) + 1;
+  list.push(nextSlot);
+  saveTemperatureSlotList(list);
+  renderAll();
+  showToast(`${getPhotoSlotLabel(nextSlot, PHOTO_TYPES.TEMPERATURE)}을(를) 추가했습니다.`);
+}
+
+function addPhotoSlot(photoType = activePhotoType) {
+  if (normalizePhotoType(photoType) === PHOTO_TYPES.TEMPERATURE) {
+    addTemperatureSlot();
+    return;
+  }
+  addDaySlot();
+}
+
 async function removeDaySlot(day) {
   const dayNo = Number(day);
   if (!Number.isInteger(dayNo) || dayNo < 1) return;
@@ -2063,16 +2145,15 @@ async function removeDaySlot(day) {
   }
 
   const entry = state.entries[dayNo];
-  const photoCount =
-    (entry && hasEntryPhoto(entry, PHOTO_TYPES.CURING) ? 1 : 0) +
-    (entry && hasEntryPhoto(entry, PHOTO_TYPES.TEMPERATURE) ? 1 : 0);
+  const photoCount = entry && hasEntryPhoto(entry, PHOTO_TYPES.CURING) ? 1 : 0;
+  const hadRainHold = entry && isRainHoldEntry(entry);
   const label = getPhotoSlotLabel(dayNo, PHOTO_TYPES.CURING);
 
   const confirmed = await confirmDangerousAction({
     title: `${label} 삭제`,
     message:
       photoCount > 0
-        ? `${label}에 등록된 사진 ${photoCount}장이 함께 삭제됩니다. 되돌릴 수 없습니다.`
+        ? `${label}에 등록된 습윤양생 사진 ${photoCount}장이 함께 삭제됩니다. 되돌릴 수 없습니다.`
         : `${label} 칸을 삭제합니다.`,
     confirmLabel: "삭제",
     countdownSeconds: photoCount > 0 ? 3 : 0,
@@ -2082,14 +2163,56 @@ async function removeDaySlot(day) {
   // 사진이 있으면 먼저 저장소에서 삭제
   if (entry) {
     if (hasEntryPhoto(entry, PHOTO_TYPES.CURING)) await deletePhoto(PHOTO_TYPES.CURING, dayNo, { skipConfirm: true });
-    if (hasEntryPhoto(entry, PHOTO_TYPES.TEMPERATURE)) await deletePhoto(PHOTO_TYPES.TEMPERATURE, dayNo, { skipConfirm: true });
-    delete state.entries[dayNo];
+    entry.rainHold = false;
+    if (hadRainHold && !hasEntryPhoto(entry, PHOTO_TYPES.CURING)) {
+      await persistEntry(dayNo, PHOTO_TYPES.CURING);
+    }
   }
 
   const remaining = getStoredDaySlotList().filter((value) => value !== dayNo);
   saveDaySlotList(remaining);
   renderAll();
   showToast(`${label}을(를) 삭제했습니다.`);
+}
+
+async function removeTemperatureSlot(slot) {
+  const slotNo = Number(slot);
+  if (!Number.isInteger(slotNo) || slotNo < 1) return;
+  if (getTemperatureSlotList().length <= 1) {
+    showToast("최소 1개의 측정 칸은 남겨야 합니다.");
+    return;
+  }
+
+  const entry = state.entries[slotNo];
+  const hasPhoto = entry && hasEntryPhoto(entry, PHOTO_TYPES.TEMPERATURE);
+  const label = getPhotoSlotLabel(slotNo, PHOTO_TYPES.TEMPERATURE);
+
+  const confirmed = await confirmDangerousAction({
+    title: `${label} 삭제`,
+    message: hasPhoto
+      ? `${label}에 등록된 온도측정 사진이 함께 삭제됩니다. 되돌릴 수 없습니다.`
+      : `${label} 칸을 삭제합니다.`,
+    confirmLabel: "삭제",
+    countdownSeconds: hasPhoto ? 3 : 0,
+  });
+  if (!confirmed) return;
+
+  if (entry && hasPhoto) {
+    await deletePhoto(PHOTO_TYPES.TEMPERATURE, slotNo, { skipConfirm: true });
+  }
+
+  const remaining = getStoredTemperatureSlotList().filter((value) => value !== slotNo);
+  saveTemperatureSlotList(remaining);
+  renderAll();
+  showToast(`${label}을(를) 삭제했습니다.`);
+}
+
+async function removePhotoSlot(photoType, slot) {
+  if (normalizePhotoType(photoType) === PHOTO_TYPES.TEMPERATURE) {
+    await removeTemperatureSlot(slot);
+    return;
+  }
+  await removeDaySlot(slot);
 }
 
 function renameDaySlot(day) {
@@ -2217,6 +2340,19 @@ function normalizeEntryShape(entry) {
     entry.rainHold = true;
   }
 
+  const memoCuringPhoto = memo.photos?.[PHOTO_TYPES.CURING];
+  if (memoCuringPhoto) {
+    if (!entry.capturedAt) {
+      entry.capturedAt = memoCuringPhoto.capturedAt || memoCuringPhoto.captured_at || "";
+    }
+    if (!entry.capturedAtSource) {
+      entry.capturedAtSource = memoCuringPhoto.capturedAtSource || memoCuringPhoto.captured_at_source || "";
+    }
+    if (!entry.sizeBytes && memoCuringPhoto.sizeBytes) {
+      entry.sizeBytes = Number(memoCuringPhoto.sizeBytes || 0);
+    }
+  }
+
   if (memo.photos?.[PHOTO_TYPES.TEMPERATURE] && !entry.photos[PHOTO_TYPES.TEMPERATURE]) {
     entry.photos[PHOTO_TYPES.TEMPERATURE] = memo.photos[PHOTO_TYPES.TEMPERATURE];
   }
@@ -2242,6 +2378,8 @@ function getTypedPhoto(entry, photoType = activePhotoType) {
       photoUrl: source.photoUrl || source.photo_url || "",
       photoPath: source.photoPath || source.photo_path || "",
       uploadedAt: source.uploadedAt || source.uploaded_at || "",
+      capturedAt: source.capturedAt || source.captured_at || "",
+      capturedAtSource: source.capturedAtSource || source.captured_at_source || "",
       sizeBytes: Number(source.sizeBytes || 0),
     };
   }
@@ -2251,6 +2389,8 @@ function getTypedPhoto(entry, photoType = activePhotoType) {
     photoUrl: typed.photoUrl || typed.photo_url || "",
     photoPath: typed.photoPath || typed.photo_path || "",
     uploadedAt: typed.uploadedAt || typed.uploaded_at || "",
+    capturedAt: typed.capturedAt || typed.captured_at || "",
+    capturedAtSource: typed.capturedAtSource || typed.captured_at_source || "",
     sizeBytes: Number(typed.sizeBytes || 0),
   };
 }
@@ -2263,7 +2403,10 @@ function setTypedPhoto(entry, photoType, photo) {
     entry.photoUrl = photo.photoUrl || "";
     entry.photoPath = photo.photoPath || "";
     entry.uploadedAt = photo.uploadedAt || "";
+    entry.capturedAt = photo.capturedAt || "";
+    entry.capturedAtSource = photo.capturedAtSource || "";
     entry.sizeBytes = Number(photo.sizeBytes || 0);
+    delete entry.photos[PHOTO_TYPES.CURING];
     return;
   }
 
@@ -2271,6 +2414,8 @@ function setTypedPhoto(entry, photoType, photo) {
     photoUrl: photo.photoUrl || "",
     photoPath: photo.photoPath || "",
     uploadedAt: photo.uploadedAt || "",
+    capturedAt: photo.capturedAt || "",
+    capturedAtSource: photo.capturedAtSource || "",
     sizeBytes: Number(photo.sizeBytes || 0),
   };
 }
@@ -2280,6 +2425,8 @@ function clearTypedPhoto(entry, photoType) {
     photoUrl: "",
     photoPath: "",
     uploadedAt: "",
+    capturedAt: "",
+    capturedAtSource: "",
     sizeBytes: 0,
   });
 }
@@ -2337,11 +2484,26 @@ function parseEntryMemo(memo) {
 }
 
 function serializeEntryMemo(entry) {
+  const photos = {
+    ...(entry?.photos || {}),
+  };
+  const curingMeta = {
+    capturedAt: entry?.capturedAt || entry?.captured_at || "",
+    capturedAtSource: entry?.capturedAtSource || entry?.captured_at_source || "",
+    sizeBytes: Number(entry?.sizeBytes || 0),
+  };
+  if (curingMeta.capturedAt || curingMeta.capturedAtSource || curingMeta.sizeBytes) {
+    photos[PHOTO_TYPES.CURING] = {
+      ...(photos[PHOTO_TYPES.CURING] || {}),
+      ...curingMeta,
+    };
+  }
+
   const memo = normalizeEntryMemo({
     rainHold: isRainHoldEntry(entry),
-    photos: entry?.photos || {},
+    photos,
   });
-  const hasPhotos = Object.values(memo.photos || {}).some((photo) => Boolean(photo?.photoUrl || photo?.photoPath));
+  const hasPhotos = Object.values(memo.photos || {}).some(hasPhotoMemoData);
   if (!memo.rainHold && !hasPhotos) return "";
   return JSON.stringify(memo);
 }
@@ -2352,22 +2514,59 @@ function normalizeEntryMemo(memo) {
     photos: {},
   };
 
-  const temperature = memo?.photos?.[PHOTO_TYPES.TEMPERATURE] || memo?.temperature || memo?.temperaturePhoto || {};
-  const photoUrl = temperature.photoUrl || temperature.photo_url || memo?.temperaturePhotoUrl || "";
-  const photoPath = temperature.photoPath || temperature.photo_path || memo?.temperaturePhotoPath || "";
-  const uploadedAt = temperature.uploadedAt || temperature.uploaded_at || memo?.temperatureUploadedAt || "";
-  const sizeBytes = Number(temperature.sizeBytes || memo?.temperatureSizeBytes || 0);
+  const curing = normalizePhotoMemo(
+    memo?.photos?.[PHOTO_TYPES.CURING] || memo?.curing || memo?.curingPhoto || {},
+    {
+      photoUrl: memo?.photoUrl || memo?.photo_url || "",
+      photoPath: memo?.photoPath || memo?.photo_path || "",
+      uploadedAt: memo?.uploadedAt || memo?.uploaded_at || "",
+      capturedAt: memo?.capturedAt || memo?.captured_at || memo?.takenAt || memo?.taken_at || "",
+      capturedAtSource: memo?.capturedAtSource || memo?.captured_at_source || "",
+      sizeBytes: memo?.sizeBytes || memo?.size_bytes || 0,
+    }
+  );
+  if (hasPhotoMemoData(curing)) {
+    normalized.photos[PHOTO_TYPES.CURING] = curing;
+  }
 
-  if (photoUrl || photoPath || uploadedAt || sizeBytes) {
-    normalized.photos[PHOTO_TYPES.TEMPERATURE] = {
-      photoUrl,
-      photoPath,
-      uploadedAt,
-      sizeBytes,
-    };
+  const temperature = memo?.photos?.[PHOTO_TYPES.TEMPERATURE] || memo?.temperature || memo?.temperaturePhoto || {};
+  const normalizedTemperature = normalizePhotoMemo(temperature, {
+    photoUrl: memo?.temperaturePhotoUrl || "",
+    photoPath: memo?.temperaturePhotoPath || "",
+    uploadedAt: memo?.temperatureUploadedAt || "",
+    capturedAt: memo?.temperatureCapturedAt || memo?.temperatureTakenAt || "",
+    capturedAtSource: memo?.temperatureCapturedAtSource || "",
+    sizeBytes: memo?.temperatureSizeBytes || 0,
+  });
+
+  if (hasPhotoMemoData(normalizedTemperature)) {
+    normalized.photos[PHOTO_TYPES.TEMPERATURE] = normalizedTemperature;
   }
 
   return normalized;
+}
+
+function normalizePhotoMemo(photo, fallback = {}) {
+  const source = photo || {};
+  return {
+    photoUrl: source.photoUrl || source.photo_url || fallback.photoUrl || "",
+    photoPath: source.photoPath || source.photo_path || fallback.photoPath || "",
+    uploadedAt: source.uploadedAt || source.uploaded_at || fallback.uploadedAt || "",
+    capturedAt: source.capturedAt || source.captured_at || source.takenAt || source.taken_at || fallback.capturedAt || "",
+    capturedAtSource: source.capturedAtSource || source.captured_at_source || fallback.capturedAtSource || "",
+    sizeBytes: Number(source.sizeBytes || source.size_bytes || fallback.sizeBytes || 0),
+  };
+}
+
+function hasPhotoMemoData(photo) {
+  return Boolean(
+    photo?.photoUrl ||
+    photo?.photoPath ||
+    photo?.uploadedAt ||
+    photo?.capturedAt ||
+    photo?.capturedAtSource ||
+    Number(photo?.sizeBytes || 0)
+  );
 }
 
 function renderAll() {
@@ -2470,9 +2669,11 @@ function renderBoardList() {
       const active = board.shareCode === state.shareCode;
       const boardEntries = board.entries || {};
       const boardDaySlots = getDaySlotList(boardEntries);
+      const boardTemperatureSlots = getTemperatureSlotList(boardEntries);
       const visibleDaySet = new Set(boardDaySlots);
+      const visibleTemperatureSet = new Set(boardTemperatureSlots);
       const curingCount = countCompletedEntries(boardEntries, PHOTO_TYPES.CURING, visibleDaySet);
-      const temperatureCount = countCompletedEntries(boardEntries, PHOTO_TYPES.TEMPERATURE, visibleDaySet);
+      const temperatureCount = countCompletedEntries(boardEntries, PHOTO_TYPES.TEMPERATURE, visibleTemperatureSet);
       const boardDaySlotCount = Math.max(boardDaySlots.length, 1);
       return `
         <div class="board-list-item ${active ? "active" : ""}" data-board-code="${escapeAttribute(board.shareCode)}">
@@ -2605,7 +2806,7 @@ function normalizeSearchText(value) {
 
 function renderSummary() {
   const photoType = activePhotoType;
-  elements.summaryList.innerHTML = days()
+  elements.summaryList.innerHTML = days(photoType)
     .map((day) => {
       const entry = getEntry(day);
       const hasPhoto = hasEntryPhoto(entry, photoType);
@@ -2637,8 +2838,10 @@ async function renderStorageMeter() {
 function renderDayGrid() {
   const photoType = activePhotoType;
   const typeConfig = getPhotoTypeConfig(photoType);
-  const canEditSlots = isAdminMode && photoType === PHOTO_TYPES.CURING;
-  let gridHtml = days()
+  const canEditSlots = isAdminMode && (photoType === PHOTO_TYPES.CURING || photoType === PHOTO_TYPES.TEMPERATURE);
+  const canRenameSlots = isAdminMode && photoType === PHOTO_TYPES.CURING;
+  const maxSlotCount = photoType === PHOTO_TYPES.TEMPERATURE ? MAX_TEMPERATURE_SLOT_COUNT : MAX_DAY_SLOT_COUNT;
+  let gridHtml = days(photoType)
     .map((day) => {
       const entry = getEntry(day);
       const photo = getTypedPhoto(entry, photoType);
@@ -2660,9 +2863,13 @@ function renderDayGrid() {
             }
             ${
               canEditSlots
-                ? `<span class="slot-admin-controls admin-only">
-                    <button class="icon-mini" type="button" data-rename-day="${day}" title="일차 이름 변경" aria-label="${escapeAttribute(slotLabel)} 이름 변경"><span aria-hidden="true">✎</span></button>
-                    <button class="icon-mini danger" type="button" data-remove-day="${day}" title="이 일차 삭제" aria-label="${escapeAttribute(slotLabel)} 삭제"><span aria-hidden="true">🗑</span></button>
+                ? `<span class="slot-admin-controls ${canRenameSlots ? "" : "single"} admin-only">
+                    ${
+                      canRenameSlots
+                        ? `<button class="icon-mini" type="button" data-rename-day="${day}" title="일차 이름 변경" aria-label="${escapeAttribute(slotLabel)} 이름 변경"><span aria-hidden="true">✎</span></button>`
+                        : ""
+                    }
+                    <button class="icon-mini danger" type="button" data-remove-day="${day}" data-remove-type="${escapeAttribute(photoType)}" title="${escapeAttribute(slotLabel)} 삭제" aria-label="${escapeAttribute(slotLabel)} 삭제"><span aria-hidden="true">🗑</span></button>
                   </span>`
                 : ""
             }
@@ -2703,12 +2910,13 @@ function renderDayGrid() {
     })
     .join("");
 
-  if (canEditSlots && getDaySlotList().length < MAX_DAY_SLOT_COUNT) {
+  if (canEditSlots && getPhotoSlotList(photoType).length < maxSlotCount) {
+    const addLabel = photoType === PHOTO_TYPES.TEMPERATURE ? "측정 추가" : "일차 추가";
     gridHtml += `
       <article class="day-card add-slot-card admin-only">
-        <button type="button" class="add-slot-button" data-add-slot title="일차 추가">
+        <button type="button" class="add-slot-button" data-add-slot="${escapeAttribute(photoType)}" title="${escapeAttribute(addLabel)}">
           <span class="add-slot-plus" aria-hidden="true">＋</span>
-          <span>일차 추가</span>
+          <span>${escapeHtml(addLabel)}</span>
         </button>
       </article>
     `;
@@ -2769,8 +2977,14 @@ function getPrintTextLengthScore(text) {
 
 function renderUploadedMeta(photo) {
   if (!photo.photoUrl) return "";
-  const time = photo.uploadedAt ? formatDateTime(photo.uploadedAt) : "";
-  return time ? `등록 ${escapeHtml(time)} · 자동 압축` : "자동 압축";
+  const capturedTime = photo.capturedAt ? formatDateTime(photo.capturedAt) : "";
+  if (capturedTime) {
+    const label = photo.capturedAtSource === "file" ? "사진일시" : photo.capturedAtSource === "uploaded" ? "등록" : "촬영";
+    return `${label} ${escapeHtml(capturedTime)} · 자동 압축`;
+  }
+
+  const uploadedTime = photo.uploadedAt ? formatDateTime(photo.uploadedAt) : "";
+  return uploadedTime ? `등록 ${escapeHtml(uploadedTime)} · 자동 압축` : "자동 압축";
 }
 
 function openPhotoViewer(day, photoType = activePhotoType) {
@@ -2801,10 +3015,16 @@ function closePhotoViewer() {
 function getPrintImageSignature() {
   const photoType = activePhotoType;
   const printSlots = getPrintSlots(photoType);
-  const entries = days().map((day) => {
+  const entries = days(photoType).map((day) => {
     const entry = getEntry(day);
     const photo = getTypedPhoto(entry, photoType);
-    return [day, photo.photoUrl || "", photo.uploadedAt || "", photoType === PHOTO_TYPES.CURING && isRainHoldEntry(entry)];
+    return [
+      day,
+      photo.photoUrl || "",
+      photo.uploadedAt || "",
+      photo.capturedAt || "",
+      photoType === PHOTO_TYPES.CURING && isRainHoldEntry(entry),
+    ];
   });
 
   return JSON.stringify({
@@ -2820,9 +3040,9 @@ function getPrintImageSignature() {
 
 function getPrintSlots(photoType = activePhotoType) {
   const normalizedType = normalizePhotoType(photoType);
-  if (normalizedType === PHOTO_TYPES.CURING) return days();
+  if (normalizedType === PHOTO_TYPES.CURING) return days(normalizedType);
 
-  return days().filter((day) => hasEntryPhoto(getEntry(day), normalizedType));
+  return days(normalizedType).filter((day) => hasEntryPhoto(getEntry(day), normalizedType));
 }
 
 function getPrintPageGroups(photoType = activePhotoType) {
@@ -3795,6 +4015,139 @@ function getKnownPhotoBytes() {
   return Math.max(listPhotoCount, currentPhotoCount) * ESTIMATED_PHOTO_BYTES;
 }
 
+async function readPhotoTimeInfo(file) {
+  const exifTime = await readExifDateTime(file).catch(() => "");
+  if (exifTime) {
+    return {
+      capturedAt: exifTime,
+      capturedAtSource: "exif",
+    };
+  }
+
+  const modifiedTime = Number(file?.lastModified || 0);
+  if (modifiedTime > 0) {
+    return {
+      capturedAt: new Date(modifiedTime).toISOString(),
+      capturedAtSource: "file",
+    };
+  }
+
+  return {
+    capturedAt: "",
+    capturedAtSource: "",
+  };
+}
+
+async function readExifDateTime(file) {
+  if (!isJpegFile(file) || !file.slice || !file.arrayBuffer) return "";
+
+  const buffer = await file.slice(0, 1024 * 1024).arrayBuffer();
+  return parseJpegExifDateTime(buffer);
+}
+
+function parseJpegExifDateTime(buffer) {
+  if (!buffer || buffer.byteLength < 12) return "";
+
+  const view = new DataView(buffer);
+  if (view.getUint16(0, false) !== 0xffd8) return "";
+
+  let offset = 2;
+  while (offset + 4 <= view.byteLength) {
+    if (view.getUint8(offset) !== 0xff) {
+      offset += 1;
+      continue;
+    }
+
+    const marker = view.getUint8(offset + 1);
+    offset += 2;
+    if (marker === 0xda || marker === 0xd9) break;
+    if (marker >= 0xd0 && marker <= 0xd7) continue;
+    if (offset + 2 > view.byteLength) break;
+
+    const segmentLength = view.getUint16(offset, false);
+    if (segmentLength < 2) break;
+
+    const segmentStart = offset + 2;
+    const segmentEnd = offset + segmentLength;
+    if (segmentEnd > view.byteLength) break;
+
+    if (marker === 0xe1 && segmentLength >= 8 && readAscii(view, segmentStart, 6) === "Exif") {
+      return parseTiffExifDateTime(view, segmentStart + 6, segmentEnd);
+    }
+
+    offset = segmentEnd;
+  }
+
+  return "";
+}
+
+function parseTiffExifDateTime(view, tiffStart, tiffEnd) {
+  if (tiffStart + 8 > tiffEnd) return "";
+
+  const byteOrder = readAscii(view, tiffStart, 2);
+  const littleEndian = byteOrder === "II";
+  if (!littleEndian && byteOrder !== "MM") return "";
+
+  const readUint16 = (offset) => view.getUint16(offset, littleEndian);
+  const readUint32 = (offset) => view.getUint32(offset, littleEndian);
+  if (readUint16(tiffStart + 2) !== 42) return "";
+
+  const readIfd = (relativeOffset) => {
+    const ifdOffset = tiffStart + relativeOffset;
+    if (ifdOffset + 2 > tiffEnd) return {};
+
+    const entryCount = readUint16(ifdOffset);
+    const tags = {};
+    for (let index = 0; index < entryCount; index += 1) {
+      const entryOffset = ifdOffset + 2 + index * 12;
+      if (entryOffset + 12 > tiffEnd) break;
+
+      const tag = readUint16(entryOffset);
+      const type = readUint16(entryOffset + 2);
+      const count = readUint32(entryOffset + 4);
+      const valueOffset = entryOffset + 8;
+
+      if (type === 2) {
+        const asciiOffset = count <= 4 ? valueOffset : tiffStart + readUint32(valueOffset);
+        if (asciiOffset >= tiffStart && asciiOffset + count <= tiffEnd) {
+          tags[tag] = readAscii(view, asciiOffset, count).replace(/\0+$/g, "").trim();
+        }
+      } else if ((type === 3 || type === 4) && count === 1) {
+        tags[tag] = type === 3 ? readUint16(valueOffset) : readUint32(valueOffset);
+      }
+    }
+    return tags;
+  };
+
+  const rootTags = readIfd(readUint32(tiffStart + 4));
+  const exifTags = rootTags[0x8769] ? readIfd(rootTags[0x8769]) : {};
+  const dateText = exifTags[0x9003] || exifTags[0x9004] || rootTags[0x0132] || "";
+  const offsetText = exifTags[0x9011] || exifTags[0x9012] || exifTags[0x9010] || "";
+  return parseExifDateTimeText(dateText, offsetText);
+}
+
+function parseExifDateTimeText(dateText, offsetText = "") {
+  const match = String(dateText || "").match(/^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if (!match) return "";
+
+  const [, year, month, day, hour, minute, second] = match;
+  if (year === "0000" || month === "00" || day === "00") return "";
+
+  const normalizedOffset = normalizeExifTimeOffset(offsetText);
+  const date = normalizedOffset
+    ? new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}${normalizedOffset}`)
+    : new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function normalizeExifTimeOffset(offsetText) {
+  const compact = String(offsetText || "").trim();
+  if (/^[+-]\d{2}:\d{2}$/.test(compact)) return compact;
+  if (/^[+-]\d{4}$/.test(compact)) return `${compact.slice(0, 3)}:${compact.slice(3)}`;
+  return "";
+}
+
 async function prepareImageFile(file) {
   if (!isHeicFile(file)) return file;
 
@@ -3885,12 +4238,27 @@ function isImageFile(file) {
   return /\.(jpe?g|png|webp|heic|heif)$/i.test(file.name || "");
 }
 
+function isJpegFile(file) {
+  return /jpe?g/i.test(file?.type || "") || /\.(jpe?g)$/i.test(file?.name || "");
+}
+
 function isHeicFile(file) {
   return /hei(c|f)/i.test(file.type || "") || /\.(heic|heif)$/i.test(file.name || "");
 }
 
-function days() {
-  return getDaySlotList();
+function readAscii(view, offset, length) {
+  let text = "";
+  const end = Math.min(view.byteLength, offset + Number(length || 0));
+  for (let index = offset; index < end; index += 1) {
+    const code = view.getUint8(index);
+    if (code === 0) break;
+    text += String.fromCharCode(code);
+  }
+  return text;
+}
+
+function days(photoType = activePhotoType, entries = state.entries) {
+  return getPhotoSlotList(photoType, entries);
 }
 
 function formatDayDate(day) {
@@ -3929,10 +4297,13 @@ function formatListDate(value) {
 
 function formatDateTime(value) {
   return new Date(value).toLocaleString("ko-KR", {
+    year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
   });
 }
 
