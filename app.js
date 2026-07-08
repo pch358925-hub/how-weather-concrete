@@ -58,6 +58,7 @@ const PRINT_PAGE_WIDTH_MM = 210;
 const PRINT_PAGE_HEIGHT_MM = 297;
 const PRINT_TABLE_WIDTH_MM = 152.02;
 const PRINT_TABLE_HEIGHT_MM = 210.1;
+const PRINT_TITLE_TOP_MARGIN_MM = 30;
 const PRINT_LABEL_WIDTH_MM = 22.03;
 const PRINT_MAIN_WIDTH_MM = 113.91;
 const PRINT_DAY_WIDTH_MM = 16.08;
@@ -2923,7 +2924,7 @@ function drawPrintPage(group, photos, allowPhotos, photoType = activePhotoType) 
 
 function drawPrintTitle(ctx) {
   const pageWidth = printMm(PRINT_PAGE_WIDTH_MM);
-  const titleY = printMm(15);
+  const titleY = printMm(PRINT_TITLE_TOP_MARGIN_MM);
   const fontPx = printPt(22);
 
   ctx.save();
@@ -2947,7 +2948,7 @@ function drawPrintTitle(ctx) {
 function drawPrintProjectName(ctx) {
   const tableX = printMm((PRINT_PAGE_WIDTH_MM - PRINT_TABLE_WIDTH_MM) / 2);
   const titleHeightMm = 22 * 25.4 / 72;
-  const tableY = printMm(15 + titleHeightMm + 16.9);
+  const tableY = printMm(PRINT_TITLE_TOP_MARGIN_MM + titleHeightMm + 16.9);
   const text = `□ ${normalizeProjectName(state.projectName || DEFAULT_PROJECT_NAME)}`;
   const fontPx = printPt(11);
   const textY = tableY - printMm(5.8);
@@ -2964,7 +2965,7 @@ function drawPrintProjectName(ctx) {
 function drawPrintTable(ctx, group, photos, allowPhotos, photoType = activePhotoType) {
   const tableX = printMm((PRINT_PAGE_WIDTH_MM - PRINT_TABLE_WIDTH_MM) / 2);
   const titleHeightMm = 22 * 25.4 / 72;
-  const tableY = printMm(15 + titleHeightMm + 16.9);
+  const tableY = printMm(PRINT_TITLE_TOP_MARGIN_MM + titleHeightMm + 16.9);
   const blockHeight = printMm(PRINT_TABLE_HEIGHT_MM / 2);
 
   group.forEach((day, index) => {
